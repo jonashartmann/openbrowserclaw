@@ -9,12 +9,51 @@
 // Instead of Claude Agent SDK in a Linux container, we use raw Anthropic
 // API calls with a tool-use loop.
 
-import type { WorkerInbound, WorkerOutbound, InvokePayload, CompactPayload, ConversationMessage, ThinkingLogEntry, TokenUsage } from './types.js';
+import type { WorkerInbound, WorkerOutbound, InvokePayload, CompactPayload, ConversationMessage, ThinkingLogEntry, TokenUsage, AuthMode } from './types.js';
 import { TOOL_DEFINITIONS } from './tools.js';
 import { ANTHROPIC_API_URL, ANTHROPIC_API_VERSION, FETCH_MAX_RESPONSE } from './config.js';
 import { readGroupFile, writeGroupFile, listGroupFiles } from './storage.js';
 import { executeShell } from './shell.js';
 import { ulid } from './ulid.js';
+
+// ---------------------------------------------------------------------------
+// Auth configuration helper
+// ---------------------------------------------------------------------------
+
+interface AuthConfig {
+  url: string;
+  headers: Record<string, string>;
+  mode: string;
+}
+
+function buildAuthConfig(payload: InvokePayload | CompactPayload): AuthConfig {
+  const { authMode, sessionKey, customApiUrl, apiKey } = payload;
+
+  if (authMode === 'session_key' && sessionKey) {
+    const url = customApiUrl || ANTHROPIC_API_URL;
+    return {
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${sessionKey}`,
+        'anthropic-version': ANTHROPIC_API_VERSION,
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      mode: 'session_key',
+    };
+  }
+
+  return {
+    url: ANTHROPIC_API_URL,
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': ANTHROPIC_API_VERSION,
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    mode: 'api_key',
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Message handler
@@ -44,9 +83,10 @@ self.onmessage = async (event: MessageEvent<WorkerInbound>) => {
 
 async function handleInvoke(payload: InvokePayload): Promise<void> {
   const { groupId, messages, systemPrompt, apiKey, model, maxTokens } = payload;
+  const auth = buildAuthConfig(payload);
 
   post({ type: 'typing', payload: { groupId } });
-  log(groupId, 'info', 'Starting', `Model: ${model} · Max tokens: ${maxTokens}`);
+  log(groupId, 'info', 'Starting', `Model: ${model} · Max tokens: ${maxTokens} · Auth: ${auth.mode}`);
 
   try {
     let currentMessages: ConversationMessage[] = [...messages];
@@ -67,14 +107,9 @@ async function handleInvoke(payload: InvokePayload): Promise<void> {
 
       log(groupId, 'api-call', `API call #${iterations}`, `${currentMessages.length} messages in context`);
 
-      const res = await fetch(ANTHROPIC_API_URL, {
+      const res = await fetch(auth.url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': ANTHROPIC_API_VERSION,
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
+        headers: auth.headers,
         body: JSON.stringify(body),
       });
 
@@ -183,7 +218,8 @@ async function handleInvoke(payload: InvokePayload): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function handleCompact(payload: CompactPayload): Promise<void> {
-  const { groupId, messages, systemPrompt, apiKey, model, maxTokens } = payload;
+  const { groupId, messages, systemPrompt, model, maxTokens } = payload;
+  const auth = buildAuthConfig(payload);
 
   post({ type: 'typing', payload: { groupId } });
   log(groupId, 'info', 'Compacting context', `Summarizing ${messages.length} messages`);
@@ -216,14 +252,9 @@ async function handleCompact(payload: CompactPayload): Promise<void> {
       messages: compactMessages,
     };
 
-    const res = await fetch(ANTHROPIC_API_URL, {
+    const res = await fetch(auth.url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': ANTHROPIC_API_VERSION,
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
+      headers: auth.headers,
       body: JSON.stringify(body),
     });
 

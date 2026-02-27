@@ -19,6 +19,7 @@ import type {
   Task,
   ConversationMessage,
   ThinkingLogEntry,
+  AuthMode,
 } from './types.js';
 import {
   ASSISTANT_NAME,
@@ -101,6 +102,9 @@ export class Orchestrator {
   private triggerPattern!: RegExp;
   private assistantName: string = ASSISTANT_NAME;
   private apiKey: string = '';
+  private authMode: AuthMode = 'api_key';
+  private sessionKey: string = '';
+  private customApiUrl: string = '';
   private model: string = DEFAULT_MODEL;
   private maxTokens: number = DEFAULT_MAX_TOKENS;
   private messageQueue: InboundMessage[] = [];
@@ -127,6 +131,22 @@ export class Orchestrator {
         await setConfig(CONFIG_KEYS.ANTHROPIC_API_KEY, '');
       }
     }
+    // Load auth mode and session key
+    const storedAuthMode = await getConfig(CONFIG_KEYS.AUTH_MODE);
+    if (storedAuthMode === 'session_key') {
+      this.authMode = 'session_key';
+    }
+    const storedSessionKey = await getConfig(CONFIG_KEYS.SESSION_KEY);
+    if (storedSessionKey) {
+      try {
+        this.sessionKey = await decryptValue(storedSessionKey);
+      } catch {
+        this.sessionKey = '';
+        await setConfig(CONFIG_KEYS.SESSION_KEY, '');
+      }
+    }
+    this.customApiUrl = (await getConfig(CONFIG_KEYS.CUSTOM_API_URL)) || '';
+
     this.model = (await getConfig(CONFIG_KEYS.MODEL)) || DEFAULT_MODEL;
     this.maxTokens = parseInt(
       (await getConfig(CONFIG_KEYS.MAX_TOKENS)) || String(DEFAULT_MAX_TOKENS),
@@ -183,9 +203,12 @@ export class Orchestrator {
   }
 
   /**
-   * Check if the API key is configured.
+   * Check if authentication is configured (API key or session key).
    */
   isConfigured(): boolean {
+    if (this.authMode === 'session_key') {
+      return this.sessionKey.length > 0;
+    }
     return this.apiKey.length > 0;
   }
 
@@ -196,6 +219,45 @@ export class Orchestrator {
     this.apiKey = key;
     const encrypted = await encryptValue(key);
     await setConfig(CONFIG_KEYS.ANTHROPIC_API_KEY, encrypted);
+  }
+
+  /**
+   * Get current auth mode.
+   */
+  getAuthMode(): AuthMode {
+    return this.authMode;
+  }
+
+  /**
+   * Update the auth mode.
+   */
+  async setAuthMode(mode: AuthMode): Promise<void> {
+    this.authMode = mode;
+    await setConfig(CONFIG_KEYS.AUTH_MODE, mode);
+  }
+
+  /**
+   * Update the session key (for Claude Pro login).
+   */
+  async setSessionKey(key: string): Promise<void> {
+    this.sessionKey = key;
+    const encrypted = await encryptValue(key);
+    await setConfig(CONFIG_KEYS.SESSION_KEY, encrypted);
+  }
+
+  /**
+   * Get custom API URL.
+   */
+  getCustomApiUrl(): string {
+    return this.customApiUrl;
+  }
+
+  /**
+   * Update custom API URL.
+   */
+  async setCustomApiUrl(url: string): Promise<void> {
+    this.customApiUrl = url;
+    await setConfig(CONFIG_KEYS.CUSTOM_API_URL, url);
   }
 
   /**
@@ -261,10 +323,10 @@ export class Orchestrator {
    * Asks Claude to produce a summary, then replaces the history with it.
    */
   async compactContext(groupId: string = DEFAULT_GROUP_ID): Promise<void> {
-    if (!this.apiKey) {
+    if (!this.isConfigured()) {
       this.events.emit('error', {
         groupId,
-        error: 'API key not configured. Cannot compact context.',
+        error: 'Authentication not configured. Cannot compact context.',
       });
       return;
     }
@@ -300,6 +362,9 @@ export class Orchestrator {
         apiKey: this.apiKey,
         model: this.model,
         maxTokens: this.maxTokens,
+        authMode: this.authMode,
+        sessionKey: this.sessionKey,
+        customApiUrl: this.customApiUrl,
       },
     });
   }
@@ -350,12 +415,11 @@ export class Orchestrator {
   private async processQueue(): Promise<void> {
     if (this.processing) return;
     if (this.messageQueue.length === 0) return;
-    if (!this.apiKey) {
-      // Can't process without API key
+    if (!this.isConfigured()) {
       const msg = this.messageQueue.shift()!;
       this.events.emit('error', {
         groupId: msg.groupId,
-        error: 'API key not configured. Go to Settings to add your Anthropic API key.',
+        error: 'Authentication not configured. Go to Settings to add your API key or sign in with Claude Pro.',
       });
       return;
     }
@@ -422,6 +486,9 @@ export class Orchestrator {
         apiKey: this.apiKey,
         model: this.model,
         maxTokens: this.maxTokens,
+        authMode: this.authMode,
+        sessionKey: this.sessionKey,
+        customApiUrl: this.customApiUrl,
       },
     });
   }
