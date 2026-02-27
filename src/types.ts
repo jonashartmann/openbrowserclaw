@@ -54,6 +54,9 @@ export interface ConfigEntry {
   value: string; // JSON-encoded or raw string
 }
 
+/** Authentication mode */
+export type AuthMode = 'api_key' | 'session_key';
+
 export type ChannelType = 'browser' | 'telegram';
 
 /** Channel interface — matches NanoClaw's Channel abstraction */
@@ -79,6 +82,9 @@ export interface CompactPayload {
   apiKey: string;
   model: string;
   maxTokens: number;
+  authMode?: AuthMode;
+  sessionKey?: string;
+  customApiUrl?: string;
 }
 
 export interface InvokePayload {
@@ -88,6 +94,9 @@ export interface InvokePayload {
   apiKey: string;
   model: string;
   maxTokens: number;
+  authMode?: AuthMode;
+  sessionKey?: string;
+  customApiUrl?: string;
 }
 
 /** Messages sent from Agent Worker → main thread */

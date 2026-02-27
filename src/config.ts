@@ -61,6 +61,9 @@ export const DEFAULT_GROUP_ID = 'br:main';
 /** Config keys */
 export const CONFIG_KEYS = {
   ANTHROPIC_API_KEY: 'anthropic_api_key',
+  AUTH_MODE: 'auth_mode',
+  SESSION_KEY: 'session_key',
+  CUSTOM_API_URL: 'custom_api_url',
   TELEGRAM_BOT_TOKEN: 'telegram_bot_token',
   TELEGRAM_CHAT_IDS: 'telegram_chat_ids',
   TRIGGER_PATTERN: 'trigger_pattern',

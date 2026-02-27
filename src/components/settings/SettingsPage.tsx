@@ -5,7 +5,7 @@
 import { useEffect, useState } from 'react';
 import {
   Palette, KeyRound, Eye, EyeOff, Bot, MessageSquare,
-  Smartphone, HardDrive, Lock, Check,
+  Smartphone, HardDrive, Lock, Check, LogIn, ExternalLink, Globe,
 } from 'lucide-react';
 import { getConfig, setConfig } from '../../db.js';
 import { CONFIG_KEYS } from '../../config.js';
@@ -13,6 +13,7 @@ import { getStorageEstimate, requestPersistentStorage } from '../../storage.js';
 import { decryptValue } from '../../crypto.js';
 import { getOrchestrator } from '../../stores/orchestrator-store.js';
 import { useThemeStore, type ThemeChoice } from '../../stores/theme-store.js';
+import type { AuthMode } from '../../types.js';
 
 const MODELS = [
   { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
@@ -31,10 +32,22 @@ function formatBytes(bytes: number): string {
 export function SettingsPage() {
   const orch = getOrchestrator();
 
+  // Auth mode
+  const [authMode, setAuthMode] = useState<AuthMode>(orch.getAuthMode());
+
   // API Key
   const [apiKey, setApiKey] = useState('');
   const [apiKeyMasked, setApiKeyMasked] = useState(true);
   const [apiKeySaved, setApiKeySaved] = useState(false);
+
+  // Session Key (Claude Pro)
+  const [sessionKey, setSessionKey] = useState('');
+  const [sessionKeyMasked, setSessionKeyMasked] = useState(true);
+  const [sessionKeySaved, setSessionKeySaved] = useState(false);
+
+  // Custom API URL
+  const [customApiUrl, setCustomApiUrl] = useState('');
+  const [customApiUrlSaved, setCustomApiUrlSaved] = useState(false);
 
   // Model
   const [model, setModel] = useState(orch.getModel());
@@ -69,6 +82,21 @@ export function SettingsPage() {
         }
       }
 
+      // Session key
+      const encSession = await getConfig(CONFIG_KEYS.SESSION_KEY);
+      if (encSession) {
+        try {
+          const dec = await decryptValue(encSession);
+          setSessionKey(dec);
+        } catch {
+          setSessionKey('');
+        }
+      }
+
+      // Custom API URL
+      const storedUrl = await getConfig(CONFIG_KEYS.CUSTOM_API_URL);
+      if (storedUrl) setCustomApiUrl(storedUrl);
+
       // Telegram
       const token = await getConfig(CONFIG_KEYS.TELEGRAM_BOT_TOKEN);
       if (token) setTelegramToken(token);
@@ -92,10 +120,31 @@ export function SettingsPage() {
     load();
   }, []);
 
+  async function handleAuthModeChange(mode: AuthMode) {
+    setAuthMode(mode);
+    await orch.setAuthMode(mode);
+  }
+
   async function handleSaveApiKey() {
     await orch.setApiKey(apiKey.trim());
     setApiKeySaved(true);
     setTimeout(() => setApiKeySaved(false), 2000);
+  }
+
+  async function handleSaveSessionKey() {
+    await orch.setSessionKey(sessionKey.trim());
+    setSessionKeySaved(true);
+    setTimeout(() => setSessionKeySaved(false), 2000);
+  }
+
+  async function handleSaveCustomApiUrl() {
+    await orch.setCustomApiUrl(customApiUrl.trim());
+    setCustomApiUrlSaved(true);
+    setTimeout(() => setCustomApiUrlSaved(false), 2000);
+  }
+
+  function handleOpenClaude() {
+    window.open('https://claude.ai', '_blank', 'noopener');
   }
 
   async function handleModelChange(value: string) {
@@ -147,40 +196,167 @@ export function SettingsPage() {
         </div>
       </div>
 
-      {/* ---- API Key ---- */}
+      {/* ---- Authentication ---- */}
       <div className="card card-bordered bg-base-200">
         <div className="card-body p-4 sm:p-6 gap-3">
-          <h3 className="card-title text-base gap-2"><KeyRound className="w-4 h-4" /> Anthropic API Key</h3>
-          <div className="flex gap-2">
-            <input
-              type={apiKeyMasked ? 'password' : 'text'}
-              className="input input-bordered input-sm w-full flex-1 font-mono"
-              placeholder="sk-ant-..."
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-            />
+          <h3 className="card-title text-base gap-2"><KeyRound className="w-4 h-4" /> Authentication</h3>
+
+          {/* Auth mode tabs */}
+          <div role="tablist" className="tabs tabs-boxed tabs-sm">
             <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setApiKeyMasked(!apiKeyMasked)}
+              role="tab"
+              className={`tab ${authMode === 'api_key' ? 'tab-active' : ''}`}
+              onClick={() => handleAuthModeChange('api_key')}
             >
-              {apiKeyMasked ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+              <KeyRound className="w-3 h-3 mr-1" /> API Key
+            </button>
+            <button
+              role="tab"
+              className={`tab ${authMode === 'session_key' ? 'tab-active' : ''}`}
+              onClick={() => handleAuthModeChange('session_key')}
+            >
+              <LogIn className="w-3 h-3 mr-1" /> Claude Pro Login
             </button>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={handleSaveApiKey}
-              disabled={!apiKey.trim()}
-            >
-              Save
-            </button>
-            {apiKeySaved && (
-              <span className="text-success text-sm flex items-center gap-1"><Check className="w-4 h-4" /> Saved</span>
-            )}
-          </div>
-          <p className="text-xs opacity-50">
-            Your API key is encrypted and stored locally. It never leaves your browser.
-          </p>
+
+          {/* API Key mode */}
+          {authMode === 'api_key' && (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type={apiKeyMasked ? 'password' : 'text'}
+                  className="input input-bordered input-sm w-full flex-1 font-mono"
+                  placeholder="sk-ant-..."
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                />
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setApiKeyMasked(!apiKeyMasked)}
+                >
+                  {apiKeyMasked ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={handleSaveApiKey}
+                  disabled={!apiKey.trim()}
+                >
+                  Save
+                </button>
+                {apiKeySaved && (
+                  <span className="text-success text-sm flex items-center gap-1"><Check className="w-4 h-4" /> Saved</span>
+                )}
+              </div>
+              <p className="text-xs opacity-50">
+                Your API key is encrypted and stored locally. It never leaves your browser.
+              </p>
+            </div>
+          )}
+
+          {/* Claude Pro Session Key mode */}
+          {authMode === 'session_key' && (
+            <div className="space-y-3">
+              {/* Step 1: Open Claude */}
+              <div className="flex flex-col gap-2">
+                <p className="text-sm font-medium">Step 1: Sign in to Claude</p>
+                <button
+                  className="btn btn-outline btn-sm w-fit"
+                  onClick={handleOpenClaude}
+                >
+                  <ExternalLink className="w-4 h-4" /> Open claude.ai
+                </button>
+              </div>
+
+              {/* Step 2: Get session key */}
+              <div className="flex flex-col gap-2">
+                <p className="text-sm font-medium">Step 2: Copy your session key</p>
+                <div className="text-xs opacity-70 space-y-1">
+                  <p>After logging in to claude.ai:</p>
+                  <ol className="list-decimal list-inside space-y-0.5 ml-1">
+                    <li>Open DevTools (F12 or Ctrl+Shift+I)</li>
+                    <li>Go to <strong>Application</strong> &gt; <strong>Cookies</strong> &gt; <strong>https://claude.ai</strong></li>
+                    <li>Find the cookie named <code className="bg-base-300 px-1 rounded">sessionKey</code></li>
+                    <li>Copy its value</li>
+                  </ol>
+                </div>
+              </div>
+
+              {/* Step 3: Paste session key */}
+              <div className="flex flex-col gap-2">
+                <p className="text-sm font-medium">Step 3: Paste your session key</p>
+                <div className="flex gap-2">
+                  <input
+                    type={sessionKeyMasked ? 'password' : 'text'}
+                    className="input input-bordered input-sm w-full flex-1 font-mono"
+                    placeholder="sk-ant-sid01-..."
+                    value={sessionKey}
+                    onChange={(e) => setSessionKey(e.target.value)}
+                  />
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setSessionKeyMasked(!sessionKeyMasked)}
+                  >
+                    {sessionKeyMasked ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={handleSaveSessionKey}
+                    disabled={!sessionKey.trim()}
+                  >
+                    Save Session Key
+                  </button>
+                  {sessionKeySaved && (
+                    <span className="text-success text-sm flex items-center gap-1"><Check className="w-4 h-4" /> Saved</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Optional: Custom API URL */}
+              <div className="collapse collapse-arrow bg-base-300 rounded-lg">
+                <input type="checkbox" />
+                <div className="collapse-title text-sm font-medium flex items-center gap-1 min-h-0 py-2">
+                  <Globe className="w-3 h-3" /> Advanced: Custom API URL
+                </div>
+                <div className="collapse-content space-y-2">
+                  <p className="text-xs opacity-70">
+                    If direct session key auth doesn't work, you can set up a CORS proxy
+                    that forwards requests to the Claude API with your session key as a cookie.
+                    Enter your proxy URL here.
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      className="input input-bordered input-sm w-full flex-1 font-mono"
+                      placeholder="https://your-proxy.example.com/v1/messages"
+                      value={customApiUrl}
+                      onChange={(e) => setCustomApiUrl(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={handleSaveCustomApiUrl}
+                    >
+                      Save URL
+                    </button>
+                    {customApiUrlSaved && (
+                      <span className="text-success text-sm flex items-center gap-1"><Check className="w-4 h-4" /> Saved</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-xs opacity-50">
+                Your session key is encrypted and stored locally. It never leaves your browser
+                (except to authenticate API requests). Session keys may expire — you'll need to
+                re-login if that happens.
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
