@@ -2,10 +2,11 @@
 // OpenBrowserClaw — Settings page
 // ---------------------------------------------------------------------------
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   Palette, KeyRound, Eye, EyeOff, Bot, MessageSquare,
   Smartphone, HardDrive, Lock, Check, LogIn, ExternalLink, Globe,
+  Bookmark, Copy, CheckCircle, Clipboard,
 } from 'lucide-react';
 import { getConfig, setConfig } from '../../db.js';
 import { CONFIG_KEYS } from '../../config.js';
@@ -14,6 +15,7 @@ import { decryptValue } from '../../crypto.js';
 import { getOrchestrator } from '../../stores/orchestrator-store.js';
 import { useThemeStore, type ThemeChoice } from '../../stores/theme-store.js';
 import type { AuthMode } from '../../types.js';
+import { buildBookmarkletCode } from '../../session-key-helper.js';
 
 const MODELS = [
   { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
@@ -65,12 +67,35 @@ export function SettingsPage() {
   const [storageQuota, setStorageQuota] = useState(0);
   const [isPersistent, setIsPersistent] = useState(false);
 
+  // Bookmarklet
+  const [bookmarkletCopied, setBookmarkletCopied] = useState(false);
+  const [sessionMethod, setSessionMethod] = useState<'bookmarklet' | 'manual'>('bookmarklet');
+
+  // Auto-imported session key (from URL hash redirect)
+  const [autoImported, setAutoImported] = useState(false);
+
   // Theme
   const { theme, setTheme } = useThemeStore();
 
-  // Load current values
+  // Load current values + check for auto-imported session key from URL hash
   useEffect(() => {
     async function load() {
+      // Check for session key in URL hash (from bookmarklet redirect)
+      const hash = window.location.hash;
+      if (hash.startsWith('#session_key=')) {
+        const key = decodeURIComponent(hash.slice('#session_key='.length));
+        if (key) {
+          setSessionKey(key);
+          setAuthMode('session_key');
+          await orch.setAuthMode('session_key');
+          await orch.setSessionKey(key);
+          setAutoImported(true);
+          setTimeout(() => setAutoImported(false), 5000);
+          // Clean the URL hash without triggering navigation
+          history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+      }
+
       // API key
       const encKey = await getConfig(CONFIG_KEYS.ANTHROPIC_API_KEY);
       if (encKey) {
@@ -82,14 +107,16 @@ export function SettingsPage() {
         }
       }
 
-      // Session key
-      const encSession = await getConfig(CONFIG_KEYS.SESSION_KEY);
-      if (encSession) {
-        try {
-          const dec = await decryptValue(encSession);
-          setSessionKey(dec);
-        } catch {
-          setSessionKey('');
+      // Session key (only load from storage if not just auto-imported)
+      if (!hash.startsWith('#session_key=')) {
+        const encSession = await getConfig(CONFIG_KEYS.SESSION_KEY);
+        if (encSession) {
+          try {
+            const dec = await decryptValue(encSession);
+            setSessionKey(dec);
+          } catch {
+            setSessionKey('');
+          }
         }
       }
 
@@ -145,6 +172,26 @@ export function SettingsPage() {
 
   function handleOpenClaude() {
     window.open('https://claude.ai', '_blank', 'noopener');
+  }
+
+  const bookmarkletHref = buildBookmarkletCode(window.location.origin);
+
+  async function handleCopyBookmarklet() {
+    try {
+      await navigator.clipboard.writeText(bookmarkletHref);
+      setBookmarkletCopied(true);
+      setTimeout(() => setBookmarkletCopied(false), 2000);
+    } catch {
+      // Fallback: select a temporary textarea
+      const ta = document.createElement('textarea');
+      ta.value = bookmarkletHref;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      setBookmarkletCopied(true);
+      setTimeout(() => setBookmarkletCopied(false), 2000);
+    }
   }
 
   async function handleModelChange(value: string) {
@@ -258,34 +305,135 @@ export function SettingsPage() {
           {/* Claude Pro Session Key mode */}
           {authMode === 'session_key' && (
             <div className="space-y-3">
-              {/* Step 1: Open Claude */}
-              <div className="flex flex-col gap-2">
-                <p className="text-sm font-medium">Step 1: Sign in to Claude</p>
+              {/* Auto-import success banner */}
+              {autoImported && (
+                <div className="alert alert-success text-sm py-2">
+                  <CheckCircle className="w-4 h-4" />
+                  <span>Session key imported automatically! You're ready to go.</span>
+                </div>
+              )}
+
+              {/* Method selector */}
+              <div role="tablist" className="tabs tabs-boxed tabs-xs">
                 <button
-                  className="btn btn-outline btn-sm w-fit"
-                  onClick={handleOpenClaude}
+                  role="tab"
+                  className={`tab ${sessionMethod === 'bookmarklet' ? 'tab-active' : ''}`}
+                  onClick={() => setSessionMethod('bookmarklet')}
                 >
-                  <ExternalLink className="w-4 h-4" /> Open claude.ai
+                  <Bookmark className="w-3 h-3 mr-1" /> Easy (Mobile-friendly)
+                </button>
+                <button
+                  role="tab"
+                  className={`tab ${sessionMethod === 'manual' ? 'tab-active' : ''}`}
+                  onClick={() => setSessionMethod('manual')}
+                >
+                  <Clipboard className="w-3 h-3 mr-1" /> Manual
                 </button>
               </div>
 
-              {/* Step 2: Get session key */}
-              <div className="flex flex-col gap-2">
-                <p className="text-sm font-medium">Step 2: Copy your session key</p>
-                <div className="text-xs opacity-70 space-y-1">
-                  <p>After logging in to claude.ai:</p>
-                  <ol className="list-decimal list-inside space-y-0.5 ml-1">
-                    <li>Open DevTools (F12 or Ctrl+Shift+I)</li>
-                    <li>Go to <strong>Application</strong> &gt; <strong>Cookies</strong> &gt; <strong>https://claude.ai</strong></li>
-                    <li>Find the cookie named <code className="bg-base-300 px-1 rounded">sessionKey</code></li>
-                    <li>Copy its value</li>
-                  </ol>
-                </div>
-              </div>
+              {/* ---- Bookmarklet method ---- */}
+              {sessionMethod === 'bookmarklet' && (
+                <div className="space-y-3">
+                  <div className="flex flex-col gap-2">
+                    <p className="text-sm font-medium">Step 1: Save the bookmarklet</p>
+                    <div className="text-xs opacity-70 space-y-1">
+                      <p><strong>On desktop:</strong> Drag the button below to your bookmarks bar.</p>
+                      <p><strong>On mobile:</strong> Tap "Copy link" below, create a new bookmark for any page, then edit it and replace the URL with the copied text.</p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* Draggable bookmarklet link (desktop) */}
+                      <a
+                        href={bookmarkletHref}
+                        onClick={(e) => e.preventDefault()}
+                        className="btn btn-secondary btn-sm no-underline"
+                        title="Drag this to your bookmarks bar"
+                      >
+                        <Bookmark className="w-4 h-4" /> Get Session Key
+                      </a>
+                      {/* Copy button (mobile) */}
+                      <button
+                        className="btn btn-outline btn-sm"
+                        onClick={handleCopyBookmarklet}
+                      >
+                        {bookmarkletCopied
+                          ? <><Check className="w-4 h-4" /> Copied!</>
+                          : <><Copy className="w-4 h-4" /> Copy link</>
+                        }
+                      </button>
+                    </div>
+                  </div>
 
-              {/* Step 3: Paste session key */}
+                  <div className="flex flex-col gap-2">
+                    <p className="text-sm font-medium">Step 2: Log in to Claude</p>
+                    <button
+                      className="btn btn-outline btn-sm w-fit"
+                      onClick={handleOpenClaude}
+                    >
+                      <ExternalLink className="w-4 h-4" /> Open claude.ai
+                    </button>
+                    <p className="text-xs opacity-70">Sign in with your Claude Pro/Team account if not already logged in.</p>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <p className="text-sm font-medium">Step 3: Run the bookmarklet</p>
+                    <div className="text-xs opacity-70 space-y-1">
+                      <p>While on claude.ai, tap/click the <strong>"Get Session Key"</strong> bookmark you saved.</p>
+                      <p>It will extract your session key and redirect you back here automatically.</p>
+                    </div>
+                  </div>
+
+                  <div className="divider text-xs opacity-50 my-1">or paste manually</div>
+                </div>
+              )}
+
+              {/* ---- Manual method ---- */}
+              {sessionMethod === 'manual' && (
+                <div className="space-y-3">
+                  <div className="flex flex-col gap-2">
+                    <p className="text-sm font-medium">Step 1: Sign in to Claude</p>
+                    <button
+                      className="btn btn-outline btn-sm w-fit"
+                      onClick={handleOpenClaude}
+                    >
+                      <ExternalLink className="w-4 h-4" /> Open claude.ai
+                    </button>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <p className="text-sm font-medium">Step 2: Copy your session key</p>
+                    <div className="text-xs opacity-70 space-y-1">
+                      <p className="font-medium">Desktop (Chrome/Firefox/Edge):</p>
+                      <ol className="list-decimal list-inside space-y-0.5 ml-1">
+                        <li>Open DevTools (F12 or Ctrl+Shift+I)</li>
+                        <li>Go to <strong>Application</strong> &gt; <strong>Cookies</strong> &gt; <strong>https://claude.ai</strong></li>
+                        <li>Find <code className="bg-base-300 px-1 rounded">sessionKey</code> and copy its value</li>
+                      </ol>
+                    </div>
+                    <div className="text-xs opacity-70 space-y-1 mt-1">
+                      <p className="font-medium">iOS Safari:</p>
+                      <ol className="list-decimal list-inside space-y-0.5 ml-1">
+                        <li>Go to <strong>Settings</strong> &gt; <strong>Safari</strong> &gt; <strong>Advanced</strong> &gt; <strong>Website Data</strong></li>
+                        <li>Search for <strong>claude.ai</strong> and tap it</li>
+                        <li>Find the <code className="bg-base-300 px-1 rounded">sessionKey</code> cookie value</li>
+                      </ol>
+                    </div>
+                    <div className="text-xs opacity-70 space-y-1 mt-1">
+                      <p className="font-medium">Android Chrome:</p>
+                      <ol className="list-decimal list-inside space-y-0.5 ml-1">
+                        <li>Use the bookmarklet method above (recommended), or</li>
+                        <li>Open <code className="bg-base-300 px-1 rounded">chrome://settings/cookies/detail?site=claude.ai</code></li>
+                        <li>Find and copy the <code className="bg-base-300 px-1 rounded">sessionKey</code> value</li>
+                      </ol>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Session key input (shared by both methods) */}
               <div className="flex flex-col gap-2">
-                <p className="text-sm font-medium">Step 3: Paste your session key</p>
+                <p className="text-sm font-medium">
+                  {sessionMethod === 'bookmarklet' ? 'Paste session key (if not auto-imported)' : 'Step 3: Paste your session key'}
+                </p>
                 <div className="flex gap-2">
                   <input
                     type={sessionKeyMasked ? 'password' : 'text'}
