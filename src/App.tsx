@@ -12,17 +12,11 @@ import { FilesPage } from './components/files/FilesPage.js';
 import { TasksPage } from './components/tasks/TasksPage.js';
 import { SettingsPage } from './components/settings/SettingsPage.js';
 
-/** Check if the URL hash contains a session key from a bookmarklet redirect. */
-function hasSessionKeyInHash(): boolean {
-  return window.location.hash.startsWith('#session_key=');
-}
-
 export function App() {
   const orchRef = useRef<Orchestrator | null>(null);
   const [loading, setLoading] = useState(true);
   const [initError, setInitError] = useState<string | null>(null);
   const ready = useOrchestratorStore((s) => s.ready);
-  const [sessionKeyRedirect] = useState(hasSessionKeyInHash);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,16 +64,13 @@ export function App() {
 
   const isConfigured = orchRef.current?.isConfigured() ?? false;
 
-  // If a session key arrived via URL hash (bookmarklet redirect), go to settings
-  const defaultRoute = sessionKeyRedirect ? '/settings' : (isConfigured ? '/chat' : '/settings');
-
   return (
     <BrowserRouter>
       <Routes>
         <Route element={<Layout />}>
           <Route
             index
-            element={<Navigate to={defaultRoute} replace />}
+            element={<Navigate to={isConfigured ? '/chat' : '/settings'} replace />}
           />
           <Route path="chat" element={<ChatPage />} />
           <Route path="files" element={<FilesPage />} />

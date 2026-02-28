@@ -2,20 +2,20 @@
 // OpenBrowserClaw — Settings page
 // ---------------------------------------------------------------------------
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import {
   Palette, KeyRound, Eye, EyeOff, Bot, MessageSquare,
-  Smartphone, HardDrive, Lock, Check, LogIn, ExternalLink, Globe,
-  Bookmark, Copy, CheckCircle, Clipboard,
+  Smartphone, HardDrive, Lock, Check, LogIn, ExternalLink,
+  CheckCircle, AlertTriangle, Loader2,
 } from 'lucide-react';
-import { getConfig, setConfig } from '../../db.js';
+import { getConfig } from '../../db.js';
 import { CONFIG_KEYS } from '../../config.js';
 import { getStorageEstimate, requestPersistentStorage } from '../../storage.js';
 import { decryptValue } from '../../crypto.js';
 import { getOrchestrator } from '../../stores/orchestrator-store.js';
 import { useThemeStore, type ThemeChoice } from '../../stores/theme-store.js';
 import type { AuthMode } from '../../types.js';
-import { buildBookmarkletCode } from '../../session-key-helper.js';
+import { generatePKCE, buildAuthorizationUrl, completeOAuthFlow } from '../../oauth.js';
 
 const MODELS = [
   { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
@@ -42,14 +42,11 @@ export function SettingsPage() {
   const [apiKeyMasked, setApiKeyMasked] = useState(true);
   const [apiKeySaved, setApiKeySaved] = useState(false);
 
-  // Session Key (Claude Pro)
-  const [sessionKey, setSessionKey] = useState('');
-  const [sessionKeyMasked, setSessionKeyMasked] = useState(true);
-  const [sessionKeySaved, setSessionKeySaved] = useState(false);
-
-  // Custom API URL
-  const [customApiUrl, setCustomApiUrl] = useState('');
-  const [customApiUrlSaved, setCustomApiUrlSaved] = useState(false);
+  // OAuth login flow state
+  const [oauthStep, setOauthStep] = useState<'idle' | 'waiting-for-code' | 'exchanging' | 'done' | 'error'>('idle');
+  const [oauthCode, setOauthCode] = useState('');
+  const [oauthError, setOauthError] = useState('');
+  const pkceVerifierRef = useRef<string>('');
 
   // Model
   const [model, setModel] = useState(orch.getModel());
@@ -67,35 +64,12 @@ export function SettingsPage() {
   const [storageQuota, setStorageQuota] = useState(0);
   const [isPersistent, setIsPersistent] = useState(false);
 
-  // Bookmarklet
-  const [bookmarkletCopied, setBookmarkletCopied] = useState(false);
-  const [sessionMethod, setSessionMethod] = useState<'bookmarklet' | 'manual'>('bookmarklet');
-
-  // Auto-imported session key (from URL hash redirect)
-  const [autoImported, setAutoImported] = useState(false);
-
   // Theme
   const { theme, setTheme } = useThemeStore();
 
-  // Load current values + check for auto-imported session key from URL hash
+  // Load current values
   useEffect(() => {
     async function load() {
-      // Check for session key in URL hash (from bookmarklet redirect)
-      const hash = window.location.hash;
-      if (hash.startsWith('#session_key=')) {
-        const key = decodeURIComponent(hash.slice('#session_key='.length));
-        if (key) {
-          setSessionKey(key);
-          setAuthMode('session_key');
-          await orch.setAuthMode('session_key');
-          await orch.setSessionKey(key);
-          setAutoImported(true);
-          setTimeout(() => setAutoImported(false), 5000);
-          // Clean the URL hash without triggering navigation
-          history.replaceState(null, '', window.location.pathname + window.location.search);
-        }
-      }
-
       // API key
       const encKey = await getConfig(CONFIG_KEYS.ANTHROPIC_API_KEY);
       if (encKey) {
@@ -106,23 +80,6 @@ export function SettingsPage() {
           setApiKey('');
         }
       }
-
-      // Session key (only load from storage if not just auto-imported)
-      if (!hash.startsWith('#session_key=')) {
-        const encSession = await getConfig(CONFIG_KEYS.SESSION_KEY);
-        if (encSession) {
-          try {
-            const dec = await decryptValue(encSession);
-            setSessionKey(dec);
-          } catch {
-            setSessionKey('');
-          }
-        }
-      }
-
-      // Custom API URL
-      const storedUrl = await getConfig(CONFIG_KEYS.CUSTOM_API_URL);
-      if (storedUrl) setCustomApiUrl(storedUrl);
 
       // Telegram
       const token = await getConfig(CONFIG_KEYS.TELEGRAM_BOT_TOKEN);
@@ -154,45 +111,55 @@ export function SettingsPage() {
 
   async function handleSaveApiKey() {
     await orch.setApiKey(apiKey.trim());
+    // Ensure auth mode is set to api_key when saving manually
+    await orch.setAuthMode('api_key');
+    setAuthMode('api_key');
     setApiKeySaved(true);
     setTimeout(() => setApiKeySaved(false), 2000);
   }
 
-  async function handleSaveSessionKey() {
-    await orch.setSessionKey(sessionKey.trim());
-    setSessionKeySaved(true);
-    setTimeout(() => setSessionKeySaved(false), 2000);
+  // --- OAuth flow ---
+
+  async function handleStartOAuth() {
+    setOauthError('');
+    setOauthCode('');
+    const pkce = await generatePKCE();
+    pkceVerifierRef.current = pkce.verifier;
+    const url = buildAuthorizationUrl(pkce.challenge);
+    window.open(url, '_blank', 'noopener');
+    setOauthStep('waiting-for-code');
   }
 
-  async function handleSaveCustomApiUrl() {
-    await orch.setCustomApiUrl(customApiUrl.trim());
-    setCustomApiUrlSaved(true);
-    setTimeout(() => setCustomApiUrlSaved(false), 2000);
-  }
+  async function handleSubmitOAuthCode() {
+    const code = oauthCode.trim();
+    if (!code) return;
 
-  function handleOpenClaude() {
-    window.open('https://claude.ai', '_blank', 'noopener');
-  }
+    setOauthStep('exchanging');
+    setOauthError('');
 
-  const bookmarkletHref = buildBookmarkletCode(window.location.origin);
+    const result = await completeOAuthFlow(code, pkceVerifierRef.current);
 
-  async function handleCopyBookmarklet() {
-    try {
-      await navigator.clipboard.writeText(bookmarkletHref);
-      setBookmarkletCopied(true);
-      setTimeout(() => setBookmarkletCopied(false), 2000);
-    } catch {
-      // Fallback: select a temporary textarea
-      const ta = document.createElement('textarea');
-      ta.value = bookmarkletHref;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      setBookmarkletCopied(true);
-      setTimeout(() => setBookmarkletCopied(false), 2000);
+    if (result.type === 'success') {
+      // Save the API key
+      setApiKey(result.apiKey);
+      await orch.setApiKey(result.apiKey);
+      await orch.setAuthMode('api_key');
+      setAuthMode('api_key');
+      setOauthStep('done');
+    } else {
+      setOauthError(result.error);
+      setOauthStep('error');
     }
   }
+
+  function handleResetOAuth() {
+    setOauthStep('idle');
+    setOauthCode('');
+    setOauthError('');
+    pkceVerifierRef.current = '';
+  }
+
+  // --- Other handlers ---
 
   async function handleModelChange(value: string) {
     setModel(value);
@@ -262,7 +229,7 @@ export function SettingsPage() {
               className={`tab ${authMode === 'session_key' ? 'tab-active' : ''}`}
               onClick={() => handleAuthModeChange('session_key')}
             >
-              <LogIn className="w-3 h-3 mr-1" /> Claude Pro Login
+              <LogIn className="w-3 h-3 mr-1" /> Login with Claude
             </button>
           </div>
 
@@ -302,206 +269,106 @@ export function SettingsPage() {
             </div>
           )}
 
-          {/* Claude Pro Session Key mode */}
+          {/* Login with Claude — OAuth flow */}
           {authMode === 'session_key' && (
             <div className="space-y-3">
-              {/* Auto-import success banner */}
-              {autoImported && (
-                <div className="alert alert-success text-sm py-2">
-                  <CheckCircle className="w-4 h-4" />
-                  <span>Session key imported automatically! You're ready to go.</span>
-                </div>
+              <p className="text-sm opacity-70">
+                Sign in with your Anthropic account to generate an API key automatically.
+                Works on any device — no developer tools needed.
+              </p>
+
+              {/* Step 1: Start OAuth */}
+              {oauthStep === 'idle' && (
+                <button
+                  className="btn btn-primary btn-sm w-fit"
+                  onClick={handleStartOAuth}
+                >
+                  <ExternalLink className="w-4 h-4" /> Sign in with Anthropic
+                </button>
               )}
 
-              {/* Method selector */}
-              <div role="tablist" className="tabs tabs-boxed tabs-xs">
-                <button
-                  role="tab"
-                  className={`tab ${sessionMethod === 'bookmarklet' ? 'tab-active' : ''}`}
-                  onClick={() => setSessionMethod('bookmarklet')}
-                >
-                  <Bookmark className="w-3 h-3 mr-1" /> Easy (Mobile-friendly)
-                </button>
-                <button
-                  role="tab"
-                  className={`tab ${sessionMethod === 'manual' ? 'tab-active' : ''}`}
-                  onClick={() => setSessionMethod('manual')}
-                >
-                  <Clipboard className="w-3 h-3 mr-1" /> Manual
-                </button>
-              </div>
-
-              {/* ---- Bookmarklet method ---- */}
-              {sessionMethod === 'bookmarklet' && (
+              {/* Step 2: Waiting for user to paste the code */}
+              {oauthStep === 'waiting-for-code' && (
                 <div className="space-y-3">
+                  <div className="alert alert-info text-sm py-2">
+                    <span>A browser tab opened to the Anthropic Console. Sign in and copy the authorization code shown after approval.</span>
+                  </div>
+
                   <div className="flex flex-col gap-2">
-                    <p className="text-sm font-medium">Step 1: Save the bookmarklet</p>
-                    <div className="text-xs opacity-70 space-y-1">
-                      <p><strong>On desktop:</strong> Drag the button below to your bookmarks bar.</p>
-                      <p><strong>On mobile:</strong> Tap "Copy link" below, create a new bookmark for any page, then edit it and replace the URL with the copied text.</p>
+                    <label className="text-sm font-medium">Paste authorization code</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        className="input input-bordered input-sm w-full flex-1 font-mono"
+                        placeholder="Paste the code here..."
+                        value={oauthCode}
+                        onChange={(e) => setOauthCode(e.target.value)}
+                        autoFocus
+                      />
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      {/* Draggable bookmarklet link (desktop) */}
-                      <a
-                        href={bookmarkletHref}
-                        onClick={(e) => e.preventDefault()}
-                        className="btn btn-secondary btn-sm no-underline"
-                        title="Drag this to your bookmarks bar"
-                      >
-                        <Bookmark className="w-4 h-4" /> Get Session Key
-                      </a>
-                      {/* Copy button (mobile) */}
+                    <div className="flex items-center gap-2">
                       <button
-                        className="btn btn-outline btn-sm"
-                        onClick={handleCopyBookmarklet}
+                        className="btn btn-primary btn-sm"
+                        onClick={handleSubmitOAuthCode}
+                        disabled={!oauthCode.trim()}
                       >
-                        {bookmarkletCopied
-                          ? <><Check className="w-4 h-4" /> Copied!</>
-                          : <><Copy className="w-4 h-4" /> Copy link</>
-                        }
+                        Submit
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={handleResetOAuth}
+                      >
+                        Cancel
                       </button>
                     </div>
                   </div>
-
-                  <div className="flex flex-col gap-2">
-                    <p className="text-sm font-medium">Step 2: Log in to Claude</p>
-                    <button
-                      className="btn btn-outline btn-sm w-fit"
-                      onClick={handleOpenClaude}
-                    >
-                      <ExternalLink className="w-4 h-4" /> Open claude.ai
-                    </button>
-                    <p className="text-xs opacity-70">Sign in with your Claude Pro/Team account if not already logged in.</p>
-                  </div>
-
-                  <div className="flex flex-col gap-2">
-                    <p className="text-sm font-medium">Step 3: Run the bookmarklet</p>
-                    <div className="text-xs opacity-70 space-y-1">
-                      <p>While on claude.ai, tap/click the <strong>"Get Session Key"</strong> bookmark you saved.</p>
-                      <p>It will extract your session key and redirect you back here automatically.</p>
-                    </div>
-                  </div>
-
-                  <div className="divider text-xs opacity-50 my-1">or paste manually</div>
                 </div>
               )}
 
-              {/* ---- Manual method ---- */}
-              {sessionMethod === 'manual' && (
-                <div className="space-y-3">
-                  <div className="flex flex-col gap-2">
-                    <p className="text-sm font-medium">Step 1: Sign in to Claude</p>
-                    <button
-                      className="btn btn-outline btn-sm w-fit"
-                      onClick={handleOpenClaude}
-                    >
-                      <ExternalLink className="w-4 h-4" /> Open claude.ai
-                    </button>
-                  </div>
-
-                  <div className="flex flex-col gap-2">
-                    <p className="text-sm font-medium">Step 2: Copy your session key</p>
-                    <div className="text-xs opacity-70 space-y-1">
-                      <p className="font-medium">Desktop (Chrome/Firefox/Edge):</p>
-                      <ol className="list-decimal list-inside space-y-0.5 ml-1">
-                        <li>Open DevTools (F12 or Ctrl+Shift+I)</li>
-                        <li>Go to <strong>Application</strong> &gt; <strong>Cookies</strong> &gt; <strong>https://claude.ai</strong></li>
-                        <li>Find <code className="bg-base-300 px-1 rounded">sessionKey</code> and copy its value</li>
-                      </ol>
-                    </div>
-                    <div className="text-xs opacity-70 space-y-1 mt-1">
-                      <p className="font-medium">iOS Safari:</p>
-                      <ol className="list-decimal list-inside space-y-0.5 ml-1">
-                        <li>Go to <strong>Settings</strong> &gt; <strong>Safari</strong> &gt; <strong>Advanced</strong> &gt; <strong>Website Data</strong></li>
-                        <li>Search for <strong>claude.ai</strong> and tap it</li>
-                        <li>Find the <code className="bg-base-300 px-1 rounded">sessionKey</code> cookie value</li>
-                      </ol>
-                    </div>
-                    <div className="text-xs opacity-70 space-y-1 mt-1">
-                      <p className="font-medium">Android Chrome:</p>
-                      <ol className="list-decimal list-inside space-y-0.5 ml-1">
-                        <li>Use the bookmarklet method above (recommended), or</li>
-                        <li>Open <code className="bg-base-300 px-1 rounded">chrome://settings/cookies/detail?site=claude.ai</code></li>
-                        <li>Find and copy the <code className="bg-base-300 px-1 rounded">sessionKey</code> value</li>
-                      </ol>
-                    </div>
-                  </div>
+              {/* Step 2b: Exchanging code for token */}
+              {oauthStep === 'exchanging' && (
+                <div className="alert text-sm py-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Exchanging code for API key...</span>
                 </div>
               )}
 
-              {/* Session key input (shared by both methods) */}
-              <div className="flex flex-col gap-2">
-                <p className="text-sm font-medium">
-                  {sessionMethod === 'bookmarklet' ? 'Paste session key (if not auto-imported)' : 'Step 3: Paste your session key'}
-                </p>
-                <div className="flex gap-2">
-                  <input
-                    type={sessionKeyMasked ? 'password' : 'text'}
-                    className="input input-bordered input-sm w-full flex-1 font-mono"
-                    placeholder="sk-ant-sid01-..."
-                    value={sessionKey}
-                    onChange={(e) => setSessionKey(e.target.value)}
-                  />
+              {/* Step 3: Success */}
+              {oauthStep === 'done' && (
+                <div className="space-y-2">
+                  <div className="alert alert-success text-sm py-2">
+                    <CheckCircle className="w-4 h-4" />
+                    <span>API key created and saved. You're ready to go!</span>
+                  </div>
                   <button
                     className="btn btn-ghost btn-sm"
-                    onClick={() => setSessionKeyMasked(!sessionKeyMasked)}
+                    onClick={handleResetOAuth}
                   >
-                    {sessionKeyMasked ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                    Done
                   </button>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    className="btn btn-primary btn-sm"
-                    onClick={handleSaveSessionKey}
-                    disabled={!sessionKey.trim()}
-                  >
-                    Save Session Key
-                  </button>
-                  {sessionKeySaved && (
-                    <span className="text-success text-sm flex items-center gap-1"><Check className="w-4 h-4" /> Saved</span>
-                  )}
-                </div>
-              </div>
+              )}
 
-              {/* Optional: Custom API URL */}
-              <div className="collapse collapse-arrow bg-base-300 rounded-lg">
-                <input type="checkbox" />
-                <div className="collapse-title text-sm font-medium flex items-center gap-1 min-h-0 py-2">
-                  <Globe className="w-3 h-3" /> Advanced: Custom API URL
-                </div>
-                <div className="collapse-content space-y-2">
-                  <p className="text-xs opacity-70">
-                    If direct session key auth doesn't work, you can set up a CORS proxy
-                    that forwards requests to the Claude API with your session key as a cookie.
-                    Enter your proxy URL here.
-                  </p>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      className="input input-bordered input-sm w-full flex-1 font-mono"
-                      placeholder="https://your-proxy.example.com/v1/messages"
-                      value={customApiUrl}
-                      onChange={(e) => setCustomApiUrl(e.target.value)}
-                    />
+              {/* Error state */}
+              {oauthStep === 'error' && (
+                <div className="space-y-2">
+                  <div className="alert alert-error text-sm py-2">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>{oauthError}</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      className="btn btn-primary btn-sm"
-                      onClick={handleSaveCustomApiUrl}
-                    >
-                      Save URL
-                    </button>
-                    {customApiUrlSaved && (
-                      <span className="text-success text-sm flex items-center gap-1"><Check className="w-4 h-4" /> Saved</span>
-                    )}
-                  </div>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={handleResetOAuth}
+                  >
+                    Try again
+                  </button>
                 </div>
-              </div>
+              )}
 
               <p className="text-xs opacity-50">
-                Your session key is encrypted and stored locally. It never leaves your browser
-                (except to authenticate API requests). Session keys may expire — you'll need to
-                re-login if that happens.
+                This uses the same OAuth flow as Claude Code CLI to create a
+                permanent API key linked to your account. The key is stored
+                encrypted in your browser.
               </p>
             </div>
           )}
