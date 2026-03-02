@@ -94,18 +94,23 @@ export async function exchangeCodeForToken(
   // Anthropic returns "code#state" format
   const splits = code.split('#');
 
-  const res = await fetch(TOKEN_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      code: splits[0],
-      state: splits[1] || '',
-      grant_type: 'authorization_code',
-      client_id: CLIENT_ID,
-      redirect_uri: REDIRECT_URI,
-      code_verifier: verifier,
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(TOKEN_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code: splits[0],
+        state: splits[1] || '',
+        grant_type: 'authorization_code',
+        client_id: CLIENT_ID,
+        redirect_uri: REDIRECT_URI,
+        code_verifier: verifier,
+      }),
+    });
+  } catch (err) {
+    return { type: 'failed', error: `Token exchange network error: ${err instanceof Error ? err.message : err}` };
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -138,13 +143,18 @@ interface ApiKeyFailure {
 export async function createApiKey(
   accessToken: string,
 ): Promise<ApiKeySuccess | ApiKeyFailure> {
-  const res = await fetch(CREATE_KEY_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${accessToken}`,
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(CREATE_KEY_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`,
+      },
+    });
+  } catch (err) {
+    return { type: 'failed', error: `API key creation network error: ${err instanceof Error ? err.message : err}` };
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');

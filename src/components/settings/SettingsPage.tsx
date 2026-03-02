@@ -137,17 +137,31 @@ export function SettingsPage() {
     setOauthStep('exchanging');
     setOauthError('');
 
-    const result = await completeOAuthFlow(code, pkceVerifierRef.current);
+    try {
+      const result = await completeOAuthFlow(code, pkceVerifierRef.current);
 
-    if (result.type === 'success') {
-      // Save the API key
-      setApiKey(result.apiKey);
-      await orch.setApiKey(result.apiKey);
-      await orch.setAuthMode('api_key');
-      setAuthMode('api_key');
-      setOauthStep('done');
-    } else {
-      setOauthError(result.error);
+      if (result.type === 'success') {
+        // Save the API key
+        setApiKey(result.apiKey);
+        await orch.setApiKey(result.apiKey);
+        await orch.setAuthMode('api_key');
+        setAuthMode('api_key');
+        setOauthStep('done');
+      } else {
+        setOauthError(result.error);
+        setOauthStep('error');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // CORS or network errors surface as TypeErrors from fetch()
+      const isCors = msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS');
+      setOauthError(
+        isCors
+          ? 'Network/CORS error: The browser blocked the token exchange request to console.anthropic.com. '
+            + 'This OAuth flow may not work directly from a browser. '
+            + 'Try using an API key from console.anthropic.com instead.'
+          : `Unexpected error: ${msg}`,
+      );
       setOauthStep('error');
     }
   }
