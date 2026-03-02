@@ -125,7 +125,7 @@ export function SettingsPage() {
     setOauthCode('');
     const pkce = await generatePKCE();
     pkceVerifierRef.current = pkce.verifier;
-    const url = buildAuthorizationUrl(pkce.challenge);
+    const url = buildAuthorizationUrl(pkce);
     window.open(url, '_blank', 'noopener');
     setOauthStep('waiting-for-code');
   }

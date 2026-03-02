@@ -2,18 +2,18 @@
 // OpenBrowserClaw — OAuth PKCE flow for Anthropic Console
 // ---------------------------------------------------------------------------
 //
-// Implements the same OAuth 2.0 + PKCE flow used by Claude Code CLI to
-// authenticate via the Anthropic Console and create a permanent API key.
+// Implements the same OAuth 2.0 + PKCE flow used by Claude Code CLI and
+// opencode-anthropic-auth to authenticate and create a permanent API key.
 //
 // Flow:
 // 1. Generate PKCE challenge/verifier
-// 2. Open console.anthropic.com/oauth/authorize
-// 3. User authenticates and gets an authorization code
+// 2. Open console.anthropic.com/oauth/authorize (with state = verifier)
+// 3. User authenticates and gets an authorization code (format: code#state)
 // 4. Exchange code for access token
 // 5. Use access token to create a permanent API key
 //
 // References:
-// - https://github.com/anomalyco/opencode-anthropic-auth
+// - https://github.com/anomalyco/opencode-anthropic-auth (index.mjs)
 // - https://github.com/querymt/anthropic-auth
 
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
@@ -22,7 +22,7 @@ const TOKEN_ENDPOINT = 'https://console.anthropic.com/v1/oauth/token';
 const CREATE_KEY_ENDPOINT = 'https://api.anthropic.com/api/oauth/claude_cli/create_api_key';
 
 // ---------------------------------------------------------------------------
-// PKCE helpers (using Web Crypto API — works in any modern browser)
+// PKCE helpers (Web Crypto API)
 // ---------------------------------------------------------------------------
 
 function generateRandomString(length: number): string {
@@ -32,8 +32,7 @@ function generateRandomString(length: number): string {
 }
 
 async function sha256(plain: string): Promise<ArrayBuffer> {
-  const encoder = new TextEncoder();
-  return crypto.subtle.digest('SHA-256', encoder.encode(plain));
+  return crypto.subtle.digest('SHA-256', new TextEncoder().encode(plain));
 }
 
 function base64UrlEncode(buffer: ArrayBuffer): string {
@@ -59,15 +58,16 @@ export async function generatePKCE(): Promise<PKCEPair> {
 // OAuth authorization URL
 // ---------------------------------------------------------------------------
 
-export function buildAuthorizationUrl(challenge: string): string {
+export function buildAuthorizationUrl(pkce: PKCEPair): string {
   const url = new URL('https://console.anthropic.com/oauth/authorize');
   url.searchParams.set('code', 'true');
   url.searchParams.set('client_id', CLIENT_ID);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('redirect_uri', REDIRECT_URI);
   url.searchParams.set('scope', 'org:create_api_key user:profile user:inference');
-  url.searchParams.set('code_challenge', challenge);
+  url.searchParams.set('code_challenge', pkce.challenge);
   url.searchParams.set('code_challenge_method', 'S256');
+  url.searchParams.set('state', pkce.verifier);
   return url.toString();
 }
 
@@ -75,14 +75,14 @@ export function buildAuthorizationUrl(challenge: string): string {
 // Token exchange
 // ---------------------------------------------------------------------------
 
-export interface TokenResult {
+interface ExchangeSuccess {
   type: 'success';
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
 }
 
-export interface TokenFailure {
+interface ExchangeFailure {
   type: 'failed';
   error: string;
 }
@@ -90,17 +90,16 @@ export interface TokenFailure {
 export async function exchangeCodeForToken(
   code: string,
   verifier: string,
-): Promise<TokenResult | TokenFailure> {
-  // Anthropic returns the code in "code#state" format
-  const parts = code.split('#');
-  const authCode = parts[0];
+): Promise<ExchangeSuccess | ExchangeFailure> {
+  // Anthropic returns "code#state" format
+  const splits = code.split('#');
 
   const res = await fetch(TOKEN_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      code: authCode,
-      state: parts[1] || '',
+      code: splits[0],
+      state: splits[1] || '',
       grant_type: 'authorization_code',
       client_id: CLIENT_ID,
       redirect_uri: REDIRECT_URI,
@@ -126,19 +125,19 @@ export async function exchangeCodeForToken(
 // API key creation
 // ---------------------------------------------------------------------------
 
-export interface ApiKeyResult {
+interface ApiKeySuccess {
   type: 'success';
   apiKey: string;
 }
 
-export interface ApiKeyFailure {
+interface ApiKeyFailure {
   type: 'failed';
   error: string;
 }
 
 export async function createApiKey(
   accessToken: string,
-): Promise<ApiKeyResult | ApiKeyFailure> {
+): Promise<ApiKeySuccess | ApiKeyFailure> {
   const res = await fetch(CREATE_KEY_ENDPOINT, {
     method: 'POST',
     headers: {
@@ -161,17 +160,16 @@ export async function createApiKey(
 }
 
 // ---------------------------------------------------------------------------
-// Full flow helper — combines all steps after the user gets the auth code
+// Full flow helper
 // ---------------------------------------------------------------------------
 
 export async function completeOAuthFlow(
   code: string,
   verifier: string,
-): Promise<ApiKeyResult | ApiKeyFailure> {
+): Promise<ApiKeySuccess | ApiKeyFailure> {
   const tokenResult = await exchangeCodeForToken(code, verifier);
   if (tokenResult.type === 'failed') {
     return tokenResult;
   }
-
   return createApiKey(tokenResult.accessToken);
 }
