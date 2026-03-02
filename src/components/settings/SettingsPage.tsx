@@ -2,11 +2,10 @@
 // OpenBrowserClaw — Settings page
 // ---------------------------------------------------------------------------
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Palette, KeyRound, Eye, EyeOff, Bot, MessageSquare,
   Smartphone, HardDrive, Lock, Check, LogIn, ExternalLink,
-  CheckCircle, AlertTriangle, Loader2,
 } from 'lucide-react';
 import { getConfig } from '../../db.js';
 import { CONFIG_KEYS } from '../../config.js';
@@ -15,7 +14,6 @@ import { decryptValue } from '../../crypto.js';
 import { getOrchestrator } from '../../stores/orchestrator-store.js';
 import { useThemeStore, type ThemeChoice } from '../../stores/theme-store.js';
 import type { AuthMode } from '../../types.js';
-import { generatePKCE, buildAuthorizationUrl, completeOAuthFlow } from '../../oauth.js';
 
 const MODELS = [
   { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
@@ -37,16 +35,10 @@ export function SettingsPage() {
   // Auth mode
   const [authMode, setAuthMode] = useState<AuthMode>(orch.getAuthMode());
 
-  // API Key
+  // API Key (shared by both tabs — "Login with Claude" just helps you get one)
   const [apiKey, setApiKey] = useState('');
   const [apiKeyMasked, setApiKeyMasked] = useState(true);
   const [apiKeySaved, setApiKeySaved] = useState(false);
-
-  // OAuth login flow state
-  const [oauthStep, setOauthStep] = useState<'idle' | 'waiting-for-code' | 'exchanging' | 'done' | 'error'>('idle');
-  const [oauthCode, setOauthCode] = useState('');
-  const [oauthError, setOauthError] = useState('');
-  const pkceVerifierRef = useRef<string>('');
 
   // Model
   const [model, setModel] = useState(orch.getModel());
@@ -70,7 +62,6 @@ export function SettingsPage() {
   // Load current values
   useEffect(() => {
     async function load() {
-      // API key
       const encKey = await getConfig(CONFIG_KEYS.ANTHROPIC_API_KEY);
       if (encKey) {
         try {
@@ -81,7 +72,6 @@ export function SettingsPage() {
         }
       }
 
-      // Telegram
       const token = await getConfig(CONFIG_KEYS.TELEGRAM_BOT_TOKEN);
       if (token) setTelegramToken(token);
       const chatIds = await getConfig(CONFIG_KEYS.TELEGRAM_CHAT_IDS);
@@ -93,7 +83,6 @@ export function SettingsPage() {
         }
       }
 
-      // Storage
       const est = await getStorageEstimate();
       setStorageUsage(est.usage);
       setStorageQuota(est.quota);
@@ -111,69 +100,15 @@ export function SettingsPage() {
 
   async function handleSaveApiKey() {
     await orch.setApiKey(apiKey.trim());
-    // Ensure auth mode is set to api_key when saving manually
     await orch.setAuthMode('api_key');
     setAuthMode('api_key');
     setApiKeySaved(true);
     setTimeout(() => setApiKeySaved(false), 2000);
   }
 
-  // --- OAuth flow ---
-
-  async function handleStartOAuth() {
-    setOauthError('');
-    setOauthCode('');
-    const pkce = await generatePKCE();
-    pkceVerifierRef.current = pkce.verifier;
-    const url = buildAuthorizationUrl(pkce);
-    window.open(url, '_blank', 'noopener');
-    setOauthStep('waiting-for-code');
+  function handleOpenConsoleKeys() {
+    window.open('https://console.anthropic.com/settings/keys', '_blank', 'noopener');
   }
-
-  async function handleSubmitOAuthCode() {
-    const code = oauthCode.trim();
-    if (!code) return;
-
-    setOauthStep('exchanging');
-    setOauthError('');
-
-    try {
-      const result = await completeOAuthFlow(code, pkceVerifierRef.current);
-
-      if (result.type === 'success') {
-        // Save the API key
-        setApiKey(result.apiKey);
-        await orch.setApiKey(result.apiKey);
-        await orch.setAuthMode('api_key');
-        setAuthMode('api_key');
-        setOauthStep('done');
-      } else {
-        setOauthError(result.error);
-        setOauthStep('error');
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // CORS or network errors surface as TypeErrors from fetch()
-      const isCors = msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS');
-      setOauthError(
-        isCors
-          ? 'Network/CORS error: The browser blocked the token exchange request to console.anthropic.com. '
-            + 'This OAuth flow may not work directly from a browser. '
-            + 'Try using an API key from console.anthropic.com instead.'
-          : `Unexpected error: ${msg}`,
-      );
-      setOauthStep('error');
-    }
-  }
-
-  function handleResetOAuth() {
-    setOauthStep('idle');
-    setOauthCode('');
-    setOauthError('');
-    pkceVerifierRef.current = '';
-  }
-
-  // --- Other handlers ---
 
   async function handleModelChange(value: string) {
     setModel(value);
@@ -247,7 +182,7 @@ export function SettingsPage() {
             </button>
           </div>
 
-          {/* API Key mode */}
+          {/* API Key mode — manual entry */}
           {authMode === 'api_key' && (
             <div className="space-y-2">
               <div className="flex gap-2">
@@ -283,106 +218,69 @@ export function SettingsPage() {
             </div>
           )}
 
-          {/* Login with Claude — OAuth flow */}
+          {/* Login with Claude — guided API key creation */}
           {authMode === 'session_key' && (
             <div className="space-y-3">
               <p className="text-sm opacity-70">
-                Sign in with your Anthropic account to generate an API key automatically.
+                Create an API key from the Anthropic Console.
                 Works on any device — no developer tools needed.
               </p>
 
-              {/* Step 1: Start OAuth */}
-              {oauthStep === 'idle' && (
+              {/* Step 1 */}
+              <div className="flex flex-col gap-1">
+                <p className="text-sm font-medium">Step 1: Open the Anthropic Console</p>
+                <p className="text-xs opacity-70">Sign in with your Anthropic account (or create one). You'll land on the API keys page.</p>
                 <button
-                  className="btn btn-primary btn-sm w-fit"
-                  onClick={handleStartOAuth}
+                  className="btn btn-primary btn-sm w-fit mt-1"
+                  onClick={handleOpenConsoleKeys}
                 >
-                  <ExternalLink className="w-4 h-4" /> Sign in with Anthropic
+                  <ExternalLink className="w-4 h-4" /> Open Anthropic Console
                 </button>
-              )}
+              </div>
 
-              {/* Step 2: Waiting for user to paste the code */}
-              {oauthStep === 'waiting-for-code' && (
-                <div className="space-y-3">
-                  <div className="alert alert-info text-sm py-2">
-                    <span>A browser tab opened to the Anthropic Console. Sign in and copy the authorization code shown after approval.</span>
-                  </div>
+              {/* Step 2 */}
+              <div className="flex flex-col gap-1">
+                <p className="text-sm font-medium">Step 2: Create an API key</p>
+                <p className="text-xs opacity-70">
+                  Click <strong>"Create Key"</strong>, give it a name (e.g. "OpenBrowserClaw"), and copy the key.
+                </p>
+              </div>
 
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm font-medium">Paste authorization code</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        className="input input-bordered input-sm w-full flex-1 font-mono"
-                        placeholder="Paste the code here..."
-                        value={oauthCode}
-                        onChange={(e) => setOauthCode(e.target.value)}
-                        autoFocus
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        className="btn btn-primary btn-sm"
-                        onClick={handleSubmitOAuthCode}
-                        disabled={!oauthCode.trim()}
-                      >
-                        Submit
-                      </button>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={handleResetOAuth}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Step 2b: Exchanging code for token */}
-              {oauthStep === 'exchanging' && (
-                <div className="alert text-sm py-2">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Exchanging code for API key...</span>
-                </div>
-              )}
-
-              {/* Step 3: Success */}
-              {oauthStep === 'done' && (
-                <div className="space-y-2">
-                  <div className="alert alert-success text-sm py-2">
-                    <CheckCircle className="w-4 h-4" />
-                    <span>API key created and saved. You're ready to go!</span>
-                  </div>
+              {/* Step 3 */}
+              <div className="flex flex-col gap-1">
+                <p className="text-sm font-medium">Step 3: Paste your API key</p>
+                <div className="flex gap-2">
+                  <input
+                    type={apiKeyMasked ? 'password' : 'text'}
+                    className="input input-bordered input-sm w-full flex-1 font-mono"
+                    placeholder="sk-ant-..."
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                  />
                   <button
                     className="btn btn-ghost btn-sm"
-                    onClick={handleResetOAuth}
+                    onClick={() => setApiKeyMasked(!apiKeyMasked)}
                   >
-                    Done
+                    {apiKeyMasked ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
                   </button>
                 </div>
-              )}
-
-              {/* Error state */}
-              {oauthStep === 'error' && (
-                <div className="space-y-2">
-                  <div className="alert alert-error text-sm py-2">
-                    <AlertTriangle className="w-4 h-4" />
-                    <span>{oauthError}</span>
-                  </div>
+                <div className="flex items-center gap-2 mt-1">
                   <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={handleResetOAuth}
+                    className="btn btn-primary btn-sm"
+                    onClick={handleSaveApiKey}
+                    disabled={!apiKey.trim()}
                   >
-                    Try again
+                    Save API Key
                   </button>
+                  {apiKeySaved && (
+                    <span className="text-success text-sm flex items-center gap-1"><Check className="w-4 h-4" /> Saved</span>
+                  )}
                 </div>
-              )}
+              </div>
 
               <p className="text-xs opacity-50">
-                This uses the same OAuth flow as Claude Code CLI to create a
-                permanent API key linked to your account. The key is stored
-                encrypted in your browser.
+                Your API key is encrypted and stored locally. It never leaves your browser
+                (except to call the Anthropic API).
               </p>
             </div>
           )}
