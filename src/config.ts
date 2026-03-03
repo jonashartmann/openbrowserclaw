@@ -28,6 +28,12 @@ export const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 /** Anthropic API version header */
 export const ANTHROPIC_API_VERSION = '2023-06-01';
 
+/** OpenRouter API endpoint (OpenAI-compatible) */
+export const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+
+/** Perplexity API endpoint (OpenAI-compatible) */
+export const PERPLEXITY_API_URL = 'https://api.perplexity.ai/chat/completions';
+
 /** Telegram Bot API base URL */
 export const TELEGRAM_API_BASE = 'https://api.telegram.org/bot';
 
@@ -72,4 +78,7 @@ export const CONFIG_KEYS = {
   PASSPHRASE_SALT: 'passphrase_salt',
   PASSPHRASE_VERIFY: 'passphrase_verify',
   ASSISTANT_NAME: 'assistant_name',
+  PROVIDER: 'provider',
+  OPENROUTER_API_KEY: 'openrouter_api_key',
+  PERPLEXITY_API_KEY: 'perplexity_api_key',
 } as const;
