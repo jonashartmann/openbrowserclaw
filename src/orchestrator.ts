@@ -20,6 +20,7 @@ import type {
   ConversationMessage,
   ThinkingLogEntry,
   AuthMode,
+  ProviderType,
 } from './types.js';
 import {
   ASSISTANT_NAME,
@@ -28,6 +29,7 @@ import {
   DEFAULT_GROUP_ID,
   DEFAULT_MAX_TOKENS,
   DEFAULT_MODEL,
+  DEFAULT_PROVIDER,
   buildTriggerPattern,
 } from './config.js';
 import {
@@ -107,6 +109,9 @@ export class Orchestrator {
   private customApiUrl: string = '';
   private model: string = DEFAULT_MODEL;
   private maxTokens: number = DEFAULT_MAX_TOKENS;
+  private provider: ProviderType = DEFAULT_PROVIDER as ProviderType;
+  private openaiApiKey: string = '';
+  private ollamaBaseUrl: string = '';
   private messageQueue: InboundMessage[] = [];
   private processing = false;
   private pendingScheduledTasks = new Set<string>();
@@ -146,6 +151,22 @@ export class Orchestrator {
       }
     }
     this.customApiUrl = (await getConfig(CONFIG_KEYS.CUSTOM_API_URL)) || '';
+
+    // Load provider settings
+    const storedProvider = await getConfig(CONFIG_KEYS.PROVIDER);
+    if (storedProvider) {
+      this.provider = storedProvider as ProviderType;
+    }
+    const encOpenaiKey = await getConfig(CONFIG_KEYS.OPENAI_API_KEY);
+    if (encOpenaiKey) {
+      try {
+        this.openaiApiKey = await decryptValue(encOpenaiKey);
+      } catch {
+        this.openaiApiKey = '';
+        await setConfig(CONFIG_KEYS.OPENAI_API_KEY, '');
+      }
+    }
+    this.ollamaBaseUrl = (await getConfig(CONFIG_KEYS.OLLAMA_BASE_URL)) || '';
 
     this.model = (await getConfig(CONFIG_KEYS.MODEL)) || DEFAULT_MODEL;
     this.maxTokens = parseInt(
@@ -261,6 +282,45 @@ export class Orchestrator {
   }
 
   /**
+   * Get current provider.
+   */
+  getProvider(): ProviderType {
+    return this.provider;
+  }
+
+  /**
+   * Update the provider.
+   */
+  async setProvider(provider: ProviderType): Promise<void> {
+    this.provider = provider;
+    await setConfig(CONFIG_KEYS.PROVIDER, provider);
+  }
+
+  /**
+   * Update the OpenAI API key.
+   */
+  async setOpenaiApiKey(key: string): Promise<void> {
+    this.openaiApiKey = key;
+    const encrypted = await encryptValue(key);
+    await setConfig(CONFIG_KEYS.OPENAI_API_KEY, encrypted);
+  }
+
+  /**
+   * Get the Ollama base URL.
+   */
+  getOllamaBaseUrl(): string {
+    return this.ollamaBaseUrl;
+  }
+
+  /**
+   * Update the Ollama base URL.
+   */
+  async setOllamaBaseUrl(url: string): Promise<void> {
+    this.ollamaBaseUrl = url;
+    await setConfig(CONFIG_KEYS.OLLAMA_BASE_URL, url);
+  }
+
+  /**
    * Get current model.
    */
   getModel(): string {
@@ -365,6 +425,9 @@ export class Orchestrator {
         authMode: this.authMode,
         sessionKey: this.sessionKey,
         customApiUrl: this.customApiUrl,
+        provider: this.provider,
+        openaiApiKey: this.openaiApiKey,
+        ollamaBaseUrl: this.ollamaBaseUrl,
       },
     });
   }
@@ -489,6 +552,9 @@ export class Orchestrator {
         authMode: this.authMode,
         sessionKey: this.sessionKey,
         customApiUrl: this.customApiUrl,
+        provider: this.provider,
+        openaiApiKey: this.openaiApiKey,
+        ollamaBaseUrl: this.ollamaBaseUrl,
       },
     });
   }

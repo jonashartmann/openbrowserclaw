@@ -57,6 +57,9 @@ export interface ConfigEntry {
 /** Authentication mode */
 export type AuthMode = 'api_key' | 'session_key';
 
+/** Provider type */
+export type ProviderType = 'anthropic' | 'openai' | 'ollama';
+
 export type ChannelType = 'browser' | 'telegram';
 
 /** Channel interface — matches NanoClaw's Channel abstraction */
@@ -85,6 +88,9 @@ export interface CompactPayload {
   authMode?: AuthMode;
   sessionKey?: string;
   customApiUrl?: string;
+  provider?: ProviderType;
+  openaiApiKey?: string;
+  ollamaBaseUrl?: string;
 }
 
 export interface InvokePayload {
@@ -97,6 +103,9 @@ export interface InvokePayload {
   authMode?: AuthMode;
   sessionKey?: string;
   customApiUrl?: string;
+  provider?: ProviderType;
+  openaiApiKey?: string;
+  ollamaBaseUrl?: string;
 }
 
 /** Messages sent from Agent Worker → main thread */

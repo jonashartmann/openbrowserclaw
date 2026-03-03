@@ -9,9 +9,9 @@
 // Instead of Claude Agent SDK in a Linux container, we use raw Anthropic
 // API calls with a tool-use loop.
 
-import type { WorkerInbound, WorkerOutbound, InvokePayload, CompactPayload, ConversationMessage, ThinkingLogEntry, TokenUsage, AuthMode } from './types.js';
+import type { WorkerInbound, WorkerOutbound, InvokePayload, CompactPayload, ConversationMessage, ThinkingLogEntry, TokenUsage, AuthMode, ProviderType } from './types.js';
 import { TOOL_DEFINITIONS } from './tools.js';
-import { ANTHROPIC_API_URL, ANTHROPIC_API_VERSION, FETCH_MAX_RESPONSE } from './config.js';
+import { ANTHROPIC_API_URL, ANTHROPIC_API_VERSION, FETCH_MAX_RESPONSE, OPENAI_API_BASE, OLLAMA_API_BASE } from './config.js';
 import { readGroupFile, writeGroupFile, listGroupFiles } from './storage.js';
 import { executeShell } from './shell.js';
 import { ulid } from './ulid.js';
@@ -63,9 +63,15 @@ self.onmessage = async (event: MessageEvent<WorkerInbound>) => {
   const { type, payload } = event.data;
 
   switch (type) {
-    case 'invoke':
-      await handleInvoke(payload as InvokePayload);
+    case 'invoke': {
+      const p = payload as InvokePayload;
+      if (p.provider === 'openai' || p.provider === 'ollama') {
+        await handleInvokeOpenAI(p);
+      } else {
+        await handleInvoke(p);
+      }
       break;
+    }
     case 'compact':
       await handleCompact(payload as CompactPayload);
       break;
@@ -200,6 +206,173 @@ async function handleInvoke(payload: InvokePayload): Promise<void> {
     }
 
     // If we hit max iterations
+    post({
+      type: 'response',
+      payload: {
+        groupId,
+        text: '⚠️ Reached maximum tool-use iterations (25). Stopping to avoid excessive API usage.',
+      },
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    post({ type: 'error', payload: { groupId, error: message } });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI / Ollama-compatible agent invocation
+// ---------------------------------------------------------------------------
+
+/** OpenAI-format tool definition */
+function toOpenAITools() {
+  return TOOL_DEFINITIONS.map((t) => ({
+    type: 'function' as const,
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema,
+    },
+  }));
+}
+
+/** Convert Anthropic-style stored messages to OpenAI format */
+function toOpenAIMessages(
+  systemPrompt: string,
+  messages: ConversationMessage[],
+): Array<{ role: string; content: string }> {
+  const result: Array<{ role: string; content: string }> = [
+    { role: 'system', content: systemPrompt },
+  ];
+  for (const m of messages) {
+    result.push({
+      role: m.role,
+      content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+    });
+  }
+  return result;
+}
+
+async function handleInvokeOpenAI(payload: InvokePayload): Promise<void> {
+  const { groupId, messages, systemPrompt, model, maxTokens } = payload;
+  const provider: ProviderType = payload.provider ?? 'openai';
+  const isOllama = provider === 'ollama';
+
+  const baseUrl = isOllama
+    ? (payload.ollamaBaseUrl || OLLAMA_API_BASE) + '/v1'
+    : OPENAI_API_BASE;
+  const apiKey = isOllama ? 'ollama' : (payload.openaiApiKey || payload.apiKey);
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${apiKey}`,
+  };
+
+  post({ type: 'typing', payload: { groupId } });
+  log(groupId, 'info', 'Starting', `Provider: ${provider} · Model: ${model} · Max tokens: ${maxTokens}`);
+
+  try {
+    let currentMessages = toOpenAIMessages(systemPrompt, messages);
+    let iterations = 0;
+    const maxIterations = 25;
+    const tools = toOpenAITools();
+
+    while (iterations < maxIterations) {
+      iterations++;
+
+      const body: Record<string, unknown> = {
+        model,
+        max_tokens: maxTokens,
+        messages: currentMessages,
+        tools,
+        tool_choice: 'auto',
+      };
+
+      log(groupId, 'api-call', `API call #${iterations}`, `${currentMessages.length} messages in context`);
+
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.text();
+        throw new Error(`${provider} API error ${res.status}: ${errBody}`);
+      }
+
+      const result = await res.json();
+      const choice = result.choices?.[0];
+      if (!choice) throw new Error('No choices in response');
+
+      const msg = choice.message;
+      const finishReason: string = choice.finish_reason;
+
+      // Emit token usage
+      if (result.usage) {
+        post({
+          type: 'token-usage',
+          payload: {
+            groupId,
+            inputTokens: result.usage.prompt_tokens || 0,
+            outputTokens: result.usage.completion_tokens || 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            contextLimit: 128_000,
+          },
+        });
+      }
+
+      if (finishReason === 'tool_calls' && msg.tool_calls?.length) {
+        // Add assistant message with tool calls
+        currentMessages.push({
+          role: 'assistant',
+          content: msg.content || '',
+          // @ts-ignore — extra fields for OpenAI format
+          tool_calls: msg.tool_calls,
+        });
+
+        // Execute each tool call and add results
+        for (const toolCall of msg.tool_calls) {
+          const toolName: string = toolCall.function.name;
+          let toolInput: Record<string, unknown>;
+          try {
+            toolInput = JSON.parse(toolCall.function.arguments);
+          } catch {
+            toolInput = {};
+          }
+
+          const inputShort = toolCall.function.arguments.length > 300
+            ? toolCall.function.arguments.slice(0, 300) + '…'
+            : toolCall.function.arguments;
+          log(groupId, 'tool-call', `Tool: ${toolName}`, inputShort);
+
+          post({ type: 'tool-activity', payload: { groupId, tool: toolName, status: 'running' } });
+
+          const output = await executeTool(toolName, toolInput, groupId);
+          const outputStr = typeof output === 'string' ? output : JSON.stringify(output);
+          const outputShort = outputStr.length > 500 ? outputStr.slice(0, 500) + '…' : outputStr;
+          log(groupId, 'tool-result', `Result: ${toolName}`, outputShort);
+
+          post({ type: 'tool-activity', payload: { groupId, tool: toolName, status: 'done' } });
+
+          currentMessages.push({
+            role: 'tool',
+            // @ts-ignore — tool_call_id for OpenAI format
+            tool_call_id: toolCall.id,
+            content: outputStr.slice(0, 100_000),
+          });
+        }
+
+        post({ type: 'typing', payload: { groupId } });
+      } else {
+        // Final text response
+        const text = msg.content || '';
+        const cleaned = text.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        post({ type: 'response', payload: { groupId, text: cleaned || '(no response)' } });
+        return;
+      }
+    }
+
     post({
       type: 'response',
       payload: {

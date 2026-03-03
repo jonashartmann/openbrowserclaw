@@ -22,11 +22,26 @@ export const DEFAULT_MAX_TOKENS = 8096;
 /** Default model */
 export const DEFAULT_MODEL = 'claude-sonnet-4-6';
 
+/** Default provider */
+export const DEFAULT_PROVIDER = 'anthropic';
+
+/** Anthropic API base URL */
+export const ANTHROPIC_API_BASE = 'https://api.anthropic.com/v1';
+
 /** Anthropic API endpoint */
 export const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 
+/** Anthropic models list endpoint */
+export const ANTHROPIC_MODELS_URL = 'https://api.anthropic.com/v1/models';
+
 /** Anthropic API version header */
 export const ANTHROPIC_API_VERSION = '2023-06-01';
+
+/** OpenAI API base URL */
+export const OPENAI_API_BASE = 'https://api.openai.com/v1';
+
+/** Ollama local API base URL */
+export const OLLAMA_API_BASE = 'http://localhost:11434';
 
 /** Telegram Bot API base URL */
 export const TELEGRAM_API_BASE = 'https://api.telegram.org/bot';
@@ -72,4 +87,7 @@ export const CONFIG_KEYS = {
   PASSPHRASE_SALT: 'passphrase_salt',
   PASSPHRASE_VERIFY: 'passphrase_verify',
   ASSISTANT_NAME: 'assistant_name',
+  PROVIDER: 'provider',
+  OPENAI_API_KEY: 'openai_api_key',
+  OLLAMA_BASE_URL: 'ollama_base_url',
 } as const;
