@@ -53,6 +53,15 @@
 .chat-markdown strong { font-weight: 700; }
 .chat-markdown em { font-style: italic; }
 
+/* ---- Horizontal prompt scroller — hide scrollbar ---- */
+.prompt-scroll {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.prompt-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 /* ---- File viewer full-screen on mobile ---- */
 @media (max-width: 640px) {
   .file-viewer-modal .modal-box {

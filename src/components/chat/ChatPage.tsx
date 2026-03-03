@@ -75,30 +75,47 @@ export function ChatPage() {
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-1">
         {messages.length === 0 && !isTyping && (
-          <div className="hero min-h-full">
-            <div className="hero-content text-center">
-              <div className="max-w-md">
-                <MessageSquare className="w-12 h-12 mx-auto mb-4 opacity-30" />
-                <h2 className="text-2xl font-bold">Start a conversation</h2>
-                <p className="mt-2 opacity-60 mb-6">Try one of these to get started</p>
-                <div className="grid gap-3">
-                  {PROMPT_STARTERS.map(({ icon: Icon, title, prompt }) => (
-                    <button
-                      key={title}
-                      className="card card-bordered bg-base-200 hover:bg-base-300 transition-colors cursor-pointer text-left"
-                      onClick={() => sendMessage(prompt)}
-                    >
-                      <div className="card-body p-4 flex-row items-center gap-3">
-                        <Icon className="w-5 h-5 opacity-60 shrink-0" />
-                        <div className="min-w-0">
-                          <div className="font-medium text-sm">{title}</div>
-                          <div className="text-xs opacity-50 truncate">{prompt}</div>
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
+          <div className="flex flex-col items-center justify-center min-h-full py-8 px-4">
+            <MessageSquare className="w-10 h-10 sm:w-12 sm:h-12 mx-auto mb-3 opacity-30" />
+            <h2 className="text-xl sm:text-2xl font-bold text-center">Start a conversation</h2>
+            <p className="mt-1.5 opacity-60 mb-5 text-sm text-center">Try one of these to get started</p>
+
+            {/* Mobile: horizontal swipeable prompt cards */}
+            <div className="flex sm:hidden gap-3 overflow-x-auto pb-2 w-full snap-x snap-mandatory prompt-scroll">
+              {PROMPT_STARTERS.map(({ icon: Icon, title, prompt }) => (
+                <button
+                  key={title}
+                  className="card card-bordered bg-base-200 active:bg-base-300 transition-colors cursor-pointer text-left shrink-0 w-44 snap-start"
+                  onClick={() => sendMessage(prompt)}
+                >
+                  <div className="card-body p-3.5 gap-1.5">
+                    <Icon className="w-5 h-5 opacity-60" />
+                    <div className="font-medium text-sm leading-snug">{title}</div>
+                    <div className="text-xs opacity-50 line-clamp-3">{prompt}</div>
+                  </div>
+                </button>
+              ))}
+              {/* Right-edge spacer so last card isn't flush against viewport */}
+              <div className="shrink-0 w-1" aria-hidden="true" />
+            </div>
+
+            {/* Desktop: vertical stacked prompt cards */}
+            <div className="hidden sm:grid gap-3 w-full max-w-md">
+              {PROMPT_STARTERS.map(({ icon: Icon, title, prompt }) => (
+                <button
+                  key={title}
+                  className="card card-bordered bg-base-200 hover:bg-base-300 active:bg-base-300 active:scale-[0.98] transition-all cursor-pointer text-left"
+                  onClick={() => sendMessage(prompt)}
+                >
+                  <div className="card-body p-4 flex-row items-start gap-3">
+                    <Icon className="w-5 h-5 opacity-60 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <div className="font-medium text-sm">{title}</div>
+                      <div className="text-xs opacity-50 mt-0.5 line-clamp-2">{prompt}</div>
+                    </div>
+                  </div>
+                </button>
+              ))}
             </div>
           </div>
         )}
