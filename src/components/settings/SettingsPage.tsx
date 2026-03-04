@@ -2,10 +2,10 @@
 // OpenBrowserClaw — Settings page
 // ---------------------------------------------------------------------------
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Palette, KeyRound, Eye, EyeOff, Bot, MessageSquare,
-  Smartphone, HardDrive, Lock, Check, LogIn, ExternalLink, Globe,
+  Smartphone, HardDrive, Lock, Check, LogIn, ExternalLink, Globe, Search, RefreshCw,
 } from 'lucide-react';
 import { getConfig, setConfig } from '../../db.js';
 import { CONFIG_KEYS } from '../../config.js';
@@ -88,6 +88,9 @@ export function SettingsPage() {
 
   // Model
   const [model, setModel] = useState(orch.getModel());
+  const [modelFilter, setModelFilter] = useState('');
+  const [fetchedModels, setFetchedModels] = useState<{ value: string; label: string }[] | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
 
   // Assistant name
   const [assistantName, setAssistantName] = useState(orch.getAssistantName());
@@ -179,6 +182,46 @@ export function SettingsPage() {
     load();
   }, []);
 
+  async function fetchModelsForProvider(p: Provider, key: string) {
+    setModelsLoading(true);
+    setFetchedModels(null);
+    try {
+      if (p === 'openrouter') {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (key) headers['Authorization'] = `Bearer ${key}`;
+        const res = await fetch('https://openrouter.ai/api/v1/models', { headers });
+        if (res.ok) {
+          const json = await res.json() as { data: { id: string; name: string }[] };
+          const models = json.data
+            .map((m) => ({ value: m.id, label: m.name ?? m.id }))
+            .sort((a, b) => a.label.localeCompare(b.label));
+          setFetchedModels(models);
+        }
+      } else if (p === 'anthropic' && key) {
+        const res = await fetch('https://api.anthropic.com/v1/models', {
+          headers: {
+            'x-api-key': key,
+            'anthropic-version': '2023-06-01',
+          },
+        });
+        if (res.ok) {
+          const json = await res.json() as { data: { id: string; display_name: string }[] };
+          const models = json.data.map((m) => ({ value: m.id, label: m.display_name ?? m.id }));
+          setFetchedModels(models);
+        }
+      }
+    } catch {
+      // leave fetchedModels null — UI will fall back to hardcoded list
+    } finally {
+      setModelsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    fetchModelsForProvider(provider, provider === 'openrouter' ? openrouterApiKey : apiKey);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, openrouterApiKey, apiKey]);
+
   async function handleProviderChange(p: Provider) {
     setProvider(p);
     await orch.setProvider(p);
@@ -186,6 +229,7 @@ export function SettingsPage() {
     const defaultModel = PROVIDER_DEFAULT_MODELS[p];
     setModel(defaultModel);
     await orch.setModel(defaultModel);
+    setModelFilter('');
   }
 
   async function handleAuthModeChange(mode: AuthMode) {
@@ -253,10 +297,19 @@ export function SettingsPage() {
 
   const storagePercent = storageQuota > 0 ? (storageUsage / storageQuota) * 100 : 0;
 
-  const modelList =
+  const modelList = fetchedModels ?? (
     provider === 'openrouter' ? OPENROUTER_MODELS
     : provider === 'perplexity' ? PERPLEXITY_MODELS
-    : ANTHROPIC_MODELS;
+    : ANTHROPIC_MODELS
+  );
+
+  const filteredModels = useMemo(() => {
+    const q = modelFilter.trim().toLowerCase();
+    if (!q) return modelList;
+    return modelList.filter(
+      (m) => m.label.toLowerCase().includes(q) || m.value.toLowerCase().includes(q),
+    );
+  }, [modelList, modelFilter]);
 
   return (
     <div className="h-full overflow-y-auto p-4 sm:p-6 max-w-3xl mx-auto space-y-4">
@@ -569,18 +622,62 @@ export function SettingsPage() {
       {/* ---- Model ---- */}
       <div className="card card-bordered bg-base-200">
         <div className="card-body p-4 sm:p-6 gap-3">
-          <h3 className="card-title text-base gap-2"><Bot className="w-4 h-4" /> Model</h3>
-          <select
-            className="select select-bordered select-sm"
-            value={model}
-            onChange={(e) => handleModelChange(e.target.value)}
-          >
-            {modelList.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
+          <div className="flex items-center justify-between">
+            <h3 className="card-title text-base gap-2"><Bot className="w-4 h-4" /> Model</h3>
+            <div className="flex items-center gap-2">
+              {modelsLoading && <RefreshCw className="w-3 h-3 animate-spin opacity-50" />}
+              {!modelsLoading && fetchedModels && (
+                <span className="text-xs opacity-40">{fetchedModels.length} models</span>
+              )}
+              <button
+                className="btn btn-ghost btn-xs"
+                title="Refresh model list"
+                onClick={() => fetchModelsForProvider(provider, provider === 'openrouter' ? openrouterApiKey : apiKey)}
+                disabled={modelsLoading}
+              >
+                <RefreshCw className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+
+          {/* Selected model display */}
+          <div className="text-sm font-mono bg-base-300 rounded px-3 py-1.5 truncate opacity-80">
+            {model}
+          </div>
+
+          {/* Filter input */}
+          <div className="relative">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 opacity-40 pointer-events-none" />
+            <input
+              type="text"
+              className="input input-bordered input-sm w-full pl-7"
+              placeholder="Filter models…"
+              value={modelFilter}
+              onChange={(e) => setModelFilter(e.target.value)}
+            />
+          </div>
+
+          {/* Model list */}
+          <div className="border border-base-300 rounded-box overflow-y-auto max-h-48 divide-y divide-base-300">
+            {filteredModels.length === 0 && (
+              <div className="px-3 py-2 text-sm opacity-40 text-center">No models found</div>
+            )}
+            {filteredModels.map((m) => (
+              <button
+                key={m.value}
+                className={`w-full text-left px-3 py-2 text-sm hover:bg-base-300 transition-colors ${
+                  model === m.value ? 'bg-primary/10 font-medium' : ''
+                }`}
+                onClick={() => handleModelChange(m.value)}
+              >
+                <div className="truncate">{m.label}</div>
+                {m.label !== m.value && (
+                  <div className="text-xs font-mono opacity-40 truncate">{m.value}</div>
+                )}
+              </button>
             ))}
-          </select>
+          </div>
+
           {provider === 'perplexity' && (
             <p className="text-xs opacity-50">
               Sonar models include real-time web search. Tool use (bash, files, etc.) is not available with Perplexity.
