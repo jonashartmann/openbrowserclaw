@@ -3,3 +3,9 @@ dev-dist
 node_modules
 .env
 .playwright-mcp
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example
