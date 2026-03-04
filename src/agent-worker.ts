@@ -9,9 +9,9 @@
 // Instead of Claude Agent SDK in a Linux container, we use raw Anthropic
 // API calls with a tool-use loop.
 
-import type { WorkerInbound, WorkerOutbound, InvokePayload, CompactPayload, ConversationMessage, ThinkingLogEntry, TokenUsage, AuthMode } from './types.js';
+import type { WorkerInbound, WorkerOutbound, InvokePayload, CompactPayload, ConversationMessage, ThinkingLogEntry, TokenUsage, AuthMode, ToolDefinition } from './types.js';
 import { TOOL_DEFINITIONS } from './tools.js';
-import { ANTHROPIC_API_URL, ANTHROPIC_API_VERSION, FETCH_MAX_RESPONSE } from './config.js';
+import { ANTHROPIC_API_URL, ANTHROPIC_API_VERSION, OPENROUTER_API_URL, PERPLEXITY_API_URL, FETCH_MAX_RESPONSE } from './config.js';
 import { readGroupFile, writeGroupFile, listGroupFiles } from './storage.js';
 import { executeShell } from './shell.js';
 import { ulid } from './ulid.js';
@@ -63,12 +63,24 @@ self.onmessage = async (event: MessageEvent<WorkerInbound>) => {
   const { type, payload } = event.data;
 
   switch (type) {
-    case 'invoke':
-      await handleInvoke(payload as InvokePayload);
+    case 'invoke': {
+      const invokePayload = payload as InvokePayload;
+      if (invokePayload.provider === 'openrouter' || invokePayload.provider === 'perplexity') {
+        await handleInvokeOpenAI(invokePayload);
+      } else {
+        await handleInvoke(invokePayload);
+      }
       break;
-    case 'compact':
-      await handleCompact(payload as CompactPayload);
+    }
+    case 'compact': {
+      const compactPayload = payload as CompactPayload;
+      if (compactPayload.provider === 'openrouter' || compactPayload.provider === 'perplexity') {
+        await handleCompactOpenAI(compactPayload);
+      } else {
+        await handleCompact(compactPayload);
+      }
       break;
+    }
     case 'cancel':
       // TODO: AbortController-based cancellation
       break;
@@ -278,6 +290,305 @@ async function handleCompact(payload: CompactPayload): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// OpenAI-compatible API loop (OpenRouter + Perplexity)
+// ---------------------------------------------------------------------------
+
+async function handleInvokeOpenAI(payload: InvokePayload): Promise<void> {
+  const { groupId, messages, systemPrompt, model, maxTokens, provider, openrouterApiKey, perplexityApiKey } = payload;
+
+  const { url, headers } = buildOpenAIAuthConfig(provider || 'openrouter', openrouterApiKey || '', perplexityApiKey || '');
+
+  // Perplexity does not support tool use
+  const useTools = provider !== 'perplexity';
+  const openaiTools = useTools ? toOpenAITools(TOOL_DEFINITIONS) : undefined;
+
+  post({ type: 'typing', payload: { groupId } });
+  log(groupId, 'info', 'Starting', `Model: ${model} · Provider: ${provider} · Max tokens: ${maxTokens}`);
+
+  try {
+    let currentMessages = toOpenAIMessages(messages, systemPrompt);
+    let iterations = 0;
+    const maxIterations = 25;
+
+    while (iterations < maxIterations) {
+      iterations++;
+
+      const body: Record<string, unknown> = {
+        model,
+        max_tokens: maxTokens,
+        messages: currentMessages,
+      };
+
+      if (openaiTools) {
+        body.tools = openaiTools;
+      }
+
+      log(groupId, 'api-call', `API call #${iterations}`, `${currentMessages.length} messages in context`);
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.text();
+        throw new Error(`${provider} API error ${res.status}: ${errBody}`);
+      }
+
+      const result = await res.json();
+
+      // Emit token usage (OpenAI format uses prompt_tokens / completion_tokens)
+      if (result.usage) {
+        post({
+          type: 'token-usage',
+          payload: {
+            groupId,
+            inputTokens: result.usage.prompt_tokens || 0,
+            outputTokens: result.usage.completion_tokens || 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            contextLimit: getContextLimit(model),
+          },
+        });
+      }
+
+      const choice = result.choices?.[0];
+      if (!choice) {
+        throw new Error('No choices in API response');
+      }
+
+      const message = choice.message;
+      const finishReason = choice.finish_reason;
+
+      // Log any text content
+      if (message.content) {
+        const preview = message.content.length > 200 ? message.content.slice(0, 200) + '…' : message.content;
+        log(groupId, 'text', 'Response text', preview);
+      }
+
+      if (finishReason === 'tool_calls' && message.tool_calls?.length > 0) {
+        // Add assistant message with tool calls to history
+        currentMessages.push({
+          role: 'assistant',
+          content: message.content ?? null,
+          tool_calls: message.tool_calls,
+        } as unknown as ConversationMessage);
+
+        // Execute each tool call
+        for (const toolCall of message.tool_calls) {
+          if (toolCall.type !== 'function') continue;
+
+          const name = toolCall.function.name as string;
+          let input: Record<string, unknown>;
+          try {
+            input = JSON.parse(toolCall.function.arguments as string);
+          } catch {
+            input = {};
+          }
+
+          const inputShort = toolCall.function.arguments.length > 300
+            ? toolCall.function.arguments.slice(0, 300) + '…'
+            : toolCall.function.arguments;
+          log(groupId, 'tool-call', `Tool: ${name}`, inputShort);
+
+          post({ type: 'tool-activity', payload: { groupId, tool: name, status: 'running' } });
+
+          const output = await executeTool(name, input, groupId);
+
+          const outputShort = output.length > 500 ? output.slice(0, 500) + '…' : output;
+          log(groupId, 'tool-result', `Result: ${name}`, outputShort);
+
+          post({ type: 'tool-activity', payload: { groupId, tool: name, status: 'done' } });
+
+          currentMessages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: output.slice(0, 100_000),
+          } as unknown as ConversationMessage);
+        }
+
+        post({ type: 'typing', payload: { groupId } });
+      } else {
+        // Final response
+        const text = (message.content as string) || '';
+        const cleaned = text.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        post({ type: 'response', payload: { groupId, text: cleaned || '(no response)' } });
+        return;
+      }
+    }
+
+    post({
+      type: 'response',
+      payload: {
+        groupId,
+        text: '⚠️ Reached maximum tool-use iterations (25). Stopping to avoid excessive API usage.',
+      },
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    post({ type: 'error', payload: { groupId, error: message } });
+  }
+}
+
+async function handleCompactOpenAI(payload: CompactPayload): Promise<void> {
+  const { groupId, messages, systemPrompt, model, maxTokens, provider, openrouterApiKey, perplexityApiKey } = payload;
+
+  const { url, headers } = buildOpenAIAuthConfig(provider || 'openrouter', openrouterApiKey || '', perplexityApiKey || '');
+
+  post({ type: 'typing', payload: { groupId } });
+  log(groupId, 'info', 'Compacting context', `Summarizing ${messages.length} messages`);
+
+  try {
+    const compactSystemPrompt = [
+      systemPrompt,
+      '',
+      '## COMPACTION TASK',
+      '',
+      'The conversation context is getting large. Produce a concise summary of the conversation so far.',
+      'Include key facts, decisions, user preferences, and any important context.',
+      'The summary will replace the full conversation history to stay within token limits.',
+      'Be thorough but concise — aim for the essential information only.',
+    ].join('\n');
+
+    const allMessages: ConversationMessage[] = [
+      ...messages,
+      {
+        role: 'user' as const,
+        content: 'Please provide a concise summary of our entire conversation so far. Include all key facts, decisions, code discussed, and important context. This summary will replace the full history.',
+      },
+    ];
+
+    const currentMessages = toOpenAIMessages(allMessages, compactSystemPrompt);
+
+    const body = {
+      model,
+      max_tokens: Math.min(maxTokens, 4096),
+      messages: currentMessages,
+    };
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`${provider} API error ${res.status}: ${errBody}`);
+    }
+
+    const result = await res.json();
+    const summary = (result.choices?.[0]?.message?.content as string) || '';
+
+    log(groupId, 'info', 'Compaction complete', `Summary: ${summary.length} chars`);
+    post({ type: 'compact-done', payload: { groupId, summary } });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    post({ type: 'error', payload: { groupId, error: `Compaction failed: ${message}` } });
+  }
+}
+
+function buildOpenAIAuthConfig(
+  provider: string,
+  openrouterApiKey: string,
+  perplexityApiKey: string,
+): { url: string; headers: Record<string, string> } {
+  if (provider === 'openrouter') {
+    return {
+      url: OPENROUTER_API_URL,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${openrouterApiKey}`,
+        'HTTP-Referer': 'https://openbrowserclaw',
+        'X-Title': 'OpenBrowserClaw',
+      },
+    };
+  }
+
+  // perplexity
+  return {
+    url: PERPLEXITY_API_URL,
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${perplexityApiKey}`,
+    },
+  };
+}
+
+/** Convert Anthropic-format messages to OpenAI-format messages */
+function toOpenAIMessages(messages: ConversationMessage[], systemPrompt: string): unknown[] {
+  const result: unknown[] = [];
+
+  if (systemPrompt) {
+    result.push({ role: 'system', content: systemPrompt });
+  }
+
+  for (const msg of messages) {
+    if (typeof msg.content === 'string') {
+      result.push({ role: msg.role, content: msg.content });
+      continue;
+    }
+
+    const blocks = msg.content;
+
+    if (msg.role === 'assistant') {
+      const textBlocks = blocks.filter((b) => b.type === 'text') as Array<{ type: 'text'; text: string }>;
+      const toolUseBlocks = blocks.filter((b) => b.type === 'tool_use') as Array<{
+        type: 'tool_use'; id: string; name: string; input: Record<string, unknown>;
+      }>;
+
+      const content = textBlocks.map((b) => b.text).join('') || null;
+
+      if (toolUseBlocks.length > 0) {
+        result.push({
+          role: 'assistant',
+          content,
+          tool_calls: toolUseBlocks.map((b) => ({
+            id: b.id,
+            type: 'function',
+            function: { name: b.name, arguments: JSON.stringify(b.input) },
+          })),
+        });
+      } else {
+        result.push({ role: 'assistant', content });
+      }
+    } else if (msg.role === 'user') {
+      const toolResultBlocks = blocks.filter((b) => b.type === 'tool_result') as Array<{
+        type: 'tool_result'; tool_use_id: string; content: string;
+      }>;
+      const textBlocks = blocks.filter((b) => b.type === 'text') as Array<{ type: 'text'; text: string }>;
+
+      if (toolResultBlocks.length > 0) {
+        for (const tr of toolResultBlocks) {
+          result.push({ role: 'tool', tool_call_id: tr.tool_use_id, content: tr.content });
+        }
+      }
+
+      if (textBlocks.length > 0) {
+        result.push({ role: 'user', content: textBlocks.map((b) => b.text).join('') });
+      } else if (toolResultBlocks.length === 0) {
+        result.push({ role: 'user', content: '' });
+      }
+    }
+  }
+
+  return result;
+}
+
+/** Convert Anthropic tool definitions to OpenAI function-calling format */
+function toOpenAITools(tools: ToolDefinition[]): unknown[] {
+  return tools.map((t) => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema,
+    },
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Tool execution
 // ---------------------------------------------------------------------------
 
@@ -413,8 +724,12 @@ function stripHtml(html: string): string {
 }
 
 /** Map model names to their context window limits (tokens). */
-function getContextLimit(_model: string): number {
-  // The actual session context window — 200k tokens for Claude Sonnet/Opus.
+function getContextLimit(model: string): number {
+  if (model.includes('sonar') || model.includes('perplexity')) return 127_072;
+  if (model.includes('gpt-4o')) return 128_000;
+  if (model.includes('llama-3.1')) return 128_000;
+  if (model.includes('gemini')) return 1_000_000;
+  // Default: 200k for Claude Sonnet/Opus
   return 200_000;
 }
 

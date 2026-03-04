@@ -20,6 +20,7 @@ import type {
   ConversationMessage,
   ThinkingLogEntry,
   AuthMode,
+  Provider,
 } from './types.js';
 import {
   ASSISTANT_NAME,
@@ -105,6 +106,9 @@ export class Orchestrator {
   private authMode: AuthMode = 'api_key';
   private sessionKey: string = '';
   private customApiUrl: string = '';
+  private provider: Provider = 'anthropic';
+  private openrouterApiKey: string = '';
+  private perplexityApiKey: string = '';
   private model: string = DEFAULT_MODEL;
   private maxTokens: number = DEFAULT_MAX_TOKENS;
   private messageQueue: InboundMessage[] = [];
@@ -146,6 +150,30 @@ export class Orchestrator {
       }
     }
     this.customApiUrl = (await getConfig(CONFIG_KEYS.CUSTOM_API_URL)) || '';
+
+    // Load provider and provider-specific keys
+    const storedProvider = await getConfig(CONFIG_KEYS.PROVIDER);
+    if (storedProvider === 'openrouter' || storedProvider === 'perplexity') {
+      this.provider = storedProvider;
+    }
+    const storedOpenrouterKey = await getConfig(CONFIG_KEYS.OPENROUTER_API_KEY);
+    if (storedOpenrouterKey) {
+      try {
+        this.openrouterApiKey = await decryptValue(storedOpenrouterKey);
+      } catch {
+        this.openrouterApiKey = '';
+        await setConfig(CONFIG_KEYS.OPENROUTER_API_KEY, '');
+      }
+    }
+    const storedPerplexityKey = await getConfig(CONFIG_KEYS.PERPLEXITY_API_KEY);
+    if (storedPerplexityKey) {
+      try {
+        this.perplexityApiKey = await decryptValue(storedPerplexityKey);
+      } catch {
+        this.perplexityApiKey = '';
+        await setConfig(CONFIG_KEYS.PERPLEXITY_API_KEY, '');
+      }
+    }
 
     this.model = (await getConfig(CONFIG_KEYS.MODEL)) || DEFAULT_MODEL;
     this.maxTokens = parseInt(
@@ -206,6 +234,13 @@ export class Orchestrator {
    * Check if authentication is configured (API key or session key).
    */
   isConfigured(): boolean {
+    if (this.provider === 'openrouter') {
+      return this.openrouterApiKey.length > 0;
+    }
+    if (this.provider === 'perplexity') {
+      return this.perplexityApiKey.length > 0;
+    }
+    // anthropic
     if (this.authMode === 'session_key') {
       return this.sessionKey.length > 0;
     }
@@ -258,6 +293,53 @@ export class Orchestrator {
   async setCustomApiUrl(url: string): Promise<void> {
     this.customApiUrl = url;
     await setConfig(CONFIG_KEYS.CUSTOM_API_URL, url);
+  }
+
+  /**
+   * Get current provider.
+   */
+  getProvider(): Provider {
+    return this.provider;
+  }
+
+  /**
+   * Update the provider.
+   */
+  async setProvider(provider: Provider): Promise<void> {
+    this.provider = provider;
+    await setConfig(CONFIG_KEYS.PROVIDER, provider);
+  }
+
+  /**
+   * Get OpenRouter API key (masked for display).
+   */
+  getOpenrouterApiKey(): string {
+    return this.openrouterApiKey;
+  }
+
+  /**
+   * Update the OpenRouter API key.
+   */
+  async setOpenrouterApiKey(key: string): Promise<void> {
+    this.openrouterApiKey = key;
+    const encrypted = await encryptValue(key);
+    await setConfig(CONFIG_KEYS.OPENROUTER_API_KEY, encrypted);
+  }
+
+  /**
+   * Get Perplexity API key.
+   */
+  getPerplexityApiKey(): string {
+    return this.perplexityApiKey;
+  }
+
+  /**
+   * Update the Perplexity API key.
+   */
+  async setPerplexityApiKey(key: string): Promise<void> {
+    this.perplexityApiKey = key;
+    const encrypted = await encryptValue(key);
+    await setConfig(CONFIG_KEYS.PERPLEXITY_API_KEY, encrypted);
   }
 
   /**
@@ -365,6 +447,9 @@ export class Orchestrator {
         authMode: this.authMode,
         sessionKey: this.sessionKey,
         customApiUrl: this.customApiUrl,
+        provider: this.provider,
+        openrouterApiKey: this.openrouterApiKey,
+        perplexityApiKey: this.perplexityApiKey,
       },
     });
   }
@@ -489,6 +574,9 @@ export class Orchestrator {
         authMode: this.authMode,
         sessionKey: this.sessionKey,
         customApiUrl: this.customApiUrl,
+        provider: this.provider,
+        openrouterApiKey: this.openrouterApiKey,
+        perplexityApiKey: this.perplexityApiKey,
       },
     });
   }
