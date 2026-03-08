@@ -215,6 +215,22 @@ export class Orchestrator {
     );
     this.scheduler.start();
 
+    // Listen for messages from the service worker (Periodic Background Sync
+    // wakes the SW which then asks the open app to run the scheduler).
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {
+        if (event.data?.type === 'run-scheduled-tasks') {
+          this.scheduler.tick().catch((err) =>
+            console.error('SW-triggered scheduler tick failed:', err),
+          );
+        }
+      });
+
+      // Register Periodic Background Sync (Chrome on Android, PWA only).
+      // Silently ignored on unsupported browsers.
+      this.registerPeriodicSync();
+    }
+
     // Wire up browser chat display callback
     this.browserChat.onDisplay((groupId, text, isFromMe) => {
       // Display handled via events.emit('message', ...)
@@ -466,6 +482,24 @@ export class Orchestrator {
   // -----------------------------------------------------------------------
   // Private
   // -----------------------------------------------------------------------
+
+  private async registerPeriodicSync(): Promise<void> {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      // `periodicSync` is only available in Chrome on Android for installed PWAs
+      if (!('periodicSync' in reg)) return;
+      const ps = (reg as any).periodicSync;
+      const tags: string[] = await ps.getTags();
+      if (!tags.includes('scheduled-tasks')) {
+        await ps.register('scheduled-tasks', {
+          // Request minimum 15-minute cadence; browser may grant less frequently
+          minInterval: 15 * 60 * 1000,
+        });
+      }
+    } catch {
+      // Permission denied or API unsupported — setInterval fallback is sufficient
+    }
+  }
 
   private setState(state: OrchestratorState): void {
     this.state = state;

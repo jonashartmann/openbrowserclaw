@@ -42,8 +42,10 @@ export class TaskScheduler {
 
   /**
    * Check for due tasks and run them.
+   * Public so the orchestrator can trigger an immediate check (e.g. when
+   * woken by a Periodic Background Sync message from the service worker).
    */
-  private async tick(): Promise<void> {
+  async tick(): Promise<void> {
     try {
       const tasks = await getEnabledTasks();
       const now = new Date();

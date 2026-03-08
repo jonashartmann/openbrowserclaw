@@ -16,6 +16,8 @@ export function App() {
   const orchRef = useRef<Orchestrator | null>(null);
   const [loading, setLoading] = useState(true);
   const [initError, setInitError] = useState<string | null>(null);
+  const [tabHidden, setTabHidden] = useState(false);
+  const [warnDismissed, setWarnDismissed] = useState(false);
   const ready = useOrchestratorStore((s) => s.ready);
 
   useEffect(() => {
@@ -39,6 +41,16 @@ export function App() {
     boot();
     return () => { cancelled = true; };
   }, []);
+
+  // Show a warning banner when the tab goes into the background so users
+  // understand why scheduled tasks pause (setInterval is throttled/stopped).
+  useEffect(() => {
+    const handler = () => setTabHidden(document.hidden);
+    document.addEventListener('visibilitychange', handler);
+    return () => document.removeEventListener('visibilitychange', handler);
+  }, []);
+
+  const showBgWarning = tabHidden && !warnDismissed;
 
   if (loading) {
     return (
@@ -66,6 +78,24 @@ export function App() {
 
   return (
     <BrowserRouter>
+      {showBgWarning && (
+        <div
+          role="alert"
+          className="fixed bottom-0 left-0 right-0 z-50 flex items-center justify-between gap-2 bg-warning text-warning-content px-4 py-2 text-sm"
+        >
+          <span>
+            Scheduled tasks are paused while the app is in the background.
+            Install as a PWA (Add to Home Screen) for background support.
+          </span>
+          <button
+            className="btn btn-xs btn-ghost"
+            onClick={() => setWarnDismissed(true)}
+            aria-label="Dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       <Routes>
         <Route element={<Layout />}>
           <Route
